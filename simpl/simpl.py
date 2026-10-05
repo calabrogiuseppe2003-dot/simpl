@@ -5,9 +5,10 @@ from firedrake.petsc import PETSc
 import os
 import contextlib
 from collections.abc import Iterable
+import csv
 
 class SiMPL(object):
-    def __init__(self, Re, gamma, alphaunderbar, alphabar, q, r_min):
+    def __init__(self, Re, gamma, alphaunderbar, alphabar, q, r_min, mu):
         self.mesh = self.mesh()
         self.comm  = self.mesh.comm
         self.rank0 = (self.comm.rank == 0)
@@ -17,6 +18,8 @@ class SiMPL(object):
         self.alphabar = alphabar
         self.q = q
         self.r_min = r_min
+        self.mu = mu
+        self.setup_parameters = self.setup(self.mesh)
 
     def density_function_space(self, mesh):
         A    = FunctionSpace(mesh, "DG", 0)  # function space for rho
@@ -88,18 +91,28 @@ class SiMPL(object):
             Res += c_bc(u, v, bid, None)
         return Res
 
-    def construct_NS_solver(self, Res, w, y_test, bcs):
+    def construct_NS_solver(self, Res, w, lam, y_test, rho_k_filtered, bcs):
         (u, p) = split(w)
         (v, q_test) = split(y_test)
         gamma = self.gamma
         Fp = Res - inner(p/gamma, q_test)*dx  + inner(div(u)*gamma, div(v))*dx  # preconditioned residual
         Jp = derivative(Fp, w)  # preconditioned jacobian
         J = derivative(Res, w)  #jacobian
-        bcs = self.boundary_conditions(W)
-        problem = NonlinearVariationalProblem(Res, w, J=J , Jp=Jp, bcs=bcs)
-        return NonlinearVariationalSolver(problem, solver_parameters = self.forward_sp())
 
-    def construct_filter_solver(self, F, rho_k, rho_k_filtered):
+        problem = NonlinearVariationalProblem(Res, w, J=J , Jp=Jp, bcs=bcs)
+        solver = NonlinearVariationalSolver(problem, solver_parameters = self.forward_sp())
+
+        Jobj = self.construct_Jobj(w, rho_k_filtered)
+
+        adjA = adjoint(derivative(Res, w))
+        rhs = -derivative(Jobj, w)
+        JpT = adjoint(Jp)
+        bcs_hom = homogenize(bcs)
+        _adj_prob = LinearVariationalProblem(adjA, rhs, lam, aP=JpT, bcs=bcs_hom)
+        _adj_solver = LinearVariationalSolver(_adj_prob, solver_parameters=self.sp_adj())
+        return solver, _adj_solver, Jobj
+
+    def construct_filter_solver(self, F, rho_k, rho_k_filtered, lam2, dJdrhof):
         v_test = TestFunction(F)
         rho_trial = TrialFunction(F)
         sp_filter = {
@@ -111,10 +124,24 @@ class SiMPL(object):
         a = self.r_min**2 * inner(grad(rho_trial), grad(v_test)) * dx + rho_trial * v_test * dx
         L = rho_k * v_test * dx#(degree=10)
         problem = LinearVariationalProblem(a, L, rho_k_filtered)
-        return LinearVariationalSolver(problem, solver_parameters = sp_filter)
+        solver = LinearVariationalSolver(problem, solver_parameters = sp_filter)
+        # Filter adjoint problem (built once)
+        rhs2 = -dJdrhof
+        _filter_adj_prob = LinearVariationalProblem(a, rhs2, lam2)
+        _filter_adj_solver = LinearVariationalSolver(_filter_adj_prob, solver_parameters=sp_filter)
+        return solver, _filter_adj_solver, L
 
-    
-    def construct_solvers(self, mesh):
+
+    def  construct_Jobj(self, w, rho_k_filtered):
+        (u, p) = split(w)
+        mu = self.mu
+        Jobj = 0.5 * (
+            2.0*mu * inner(sym(grad(u)), sym(grad(u)))
+            + self.alpha_perm(rho_k_filtered) * inner(u, u)
+        ) * dx(degree=10)
+        return Jobj
+
+    def setup(self, mesh):
         A, F, VIZ = self.density_function_space(mesh)
         W = self.velocity_function_space(mesh)
 
@@ -127,19 +154,29 @@ class SiMPL(object):
 
         y_test = TestFunction(W)
         (v, q_test) = split(y_test)
+        lam = Function(W)  #NS adjoint
+        lam2 = Function(F)  #filter adjoint
+
         bcs = self.boundary_conditions(W)
         Res = self.forward_NS_form(mesh, rho_k_filtered, w, y_test, bcs)
-        NS_solver = self.construct_NS_solver(Res, w, y_test, bcs)
+        NS_solver, _adj_solver, Jobj = self.construct_NS_solver(Res, w, lam, y_test, rho_k_filtered, bcs)
 
 
-        filter_solver = self.construct_filter_solver(F, rho_k, rho_k_filtered)
+        # dJ/d(rho_filtered) (built once, symbolic)
+        dFdrhof = derivative(Res, rho_k_filtered)
+        dJdrhof = derivative(Jobj, rho_k_filtered) + action(adjoint(dFdrhof), lam)
+
+        filter_solver, _filter_adj_solver, L = self.construct_filter_solver(F, rho_k, rho_k_filtered, lam2, dJdrhof)
 
 
+        # dJ/d(rho) (built once, symbolic)
+        dFdrho = -derivative(L, rho_k)
+        dJdrho_form = action(adjoint(dFdrho), lam2)
 
-        
+        if self.rank0:
+            PETSc.Sys.Print(f"Velocity DoFs: {W.sub(0).dim()}, Pressure DoFs: {W.sub(1).dim()}, Density DoFs: {A.dim()}")
 
-
-        return rho_k, rho_k_filtered, Riesz, NS_solver, filter_solver
+        return A, F, VIZ, w, rho_k, rho_k_filtered, Jobj, Riesz, NS_solver, filter_solver, _adj_solver, _filter_adj_solver, dJdrho_form 
 
 
     def illinois(self, f, a, b, tol=1e-8, maxiter=100):
@@ -239,20 +276,36 @@ class SiMPL(object):
         return assemble(Jobj)
 
 
-    def compute_derivative(self, _adj_solver, _filter_adj_solver):
+    def compute_derivative(self, _adj_solver, _filter_adj_solver, dJdrho_form):
         """Solve the two adjoint systems (already built/factorised once
         above) and return the reduced gradient as an assembled cofunction."""
         _adj_solver.solve()
         _filter_adj_solver.solve()
-        return
+        return assemble(dJdrho_form)
 
-    def setup(self):
-        raise NotImplementedError
+    def continuation_solve(self, Re_v, output_dir):
+        w = self.setup_parameters[3]
+        Re = self.Re
+        q = self.q
+        NS_solver = self.setup_parameters[8]
+
+        if float(Re) > 5:
+            PETSc.Sys.Print(f"Using continuing strategy to reach Re={float(Re)}, with q={float(q)}.")
+            Re_final = int(float(Re))
+            if Re_v[-1] != Re_final:
+                Re_v.append(Re_final)
+
+            u_curr, p_curr = w.subfunctions
+
+            for Re_ in Re_v:
+                PETSc.Sys.Print(f"Current Re={Re_}")
+                Re.assign(Re_)
+                NS_solver.solve()
+                VTKFile(f"{output_dir}/velocity_latest.pvd").write(u_curr)
 
     def simpl(
         self,
         tol,
-        rho0,
         target_volume,
         q_values=(0.01, 0.1),
         iters_per_q=(18, 30),
@@ -260,7 +313,7 @@ class SiMPL(object):
         simpl_type="A",
         max_backtrack=50,
         descent_tol=None,
-        output_dir="output-rol-firedrake2",
+        output_dir="output",
         alpha_initial=None,
     ):
         if len(q_values) != len(iters_per_q):
@@ -271,8 +324,9 @@ class SiMPL(object):
         if descent_tol is None:
             descent_tol = tol
 
-        (VIZ, F, A, w, rho_k, rho_k_filtered, filter_solver, NS_solver, Jobj,
-         _adj_solver, _filter_adj_solver, Riesz, lam2) = self.setup()
+        (A, F, VIZ, w, rho_k, rho_k_filtered, Jobj, 
+         Riesz, NS_solver, filter_solver, _adj_solver, 
+         _filter_adj_solver, dJdrho_form) = self.setup_parameters
         # ------------------------------------------------------------------
         # Preallocate all working Functions BEFORE the closures that use them
         # ------------------------------------------------------------------
@@ -304,7 +358,7 @@ class SiMPL(object):
         # ------------------------------------------------------------------
         # Initialise
         # ------------------------------------------------------------------
-        rho_k.assign(rho0)
+        rho_k.assign((Constant(float(target_volume))))
         psi_k.interpolate(self.sigma_inv(rho_k))
         filter_solver.solve()
         rho_filtered_prev.assign(rho_k_filtered)
@@ -317,7 +371,7 @@ class SiMPL(object):
         rhofilts = VTKFile(f"{output_dir}/rho_filtered_iterations.pvd")
         velocities = VTKFile(f"{output_dir}/velocity_iterations.pvd")
 
-        rho_viz.interpolate(rho0)
+        rho_viz.interpolate((Constant(float(target_volume))))
         controls.write(rho_viz)
 
         VTKFile(f"{output_dir}/rho_latest.pvd").write(rho_viz)
@@ -356,7 +410,7 @@ class SiMPL(object):
                 PETSc.Sys.Print(f"Stage {stage}: q = {float(q_value)}, max_iter = {niter}")
                 PETSc.Sys.Print(f"{'=' * 60}")
 
-                q.assign(float(q_value))
+                self.q.assign(float(q_value))
 
                 alpha_prev = None
                 converged = False
@@ -371,12 +425,12 @@ class SiMPL(object):
                         J_current = float(self.build_functional(filter_solver, NS_solver, Jobj))
 
                     # ---- Gradient ------------------------------------------
-                    self.compute_derivative(_adj_solver, _filter_adj_solver)
+                    gk_dual = self.compute_derivative(_adj_solver, _filter_adj_solver, dJdrho_form)
 
                     adj_ns_its = _adj_solver.snes.getLinearSolveIterations()      # FGMRES its, adjoint NS
                     filter_adj_its = _filter_adj_solver.snes.getLinearSolveIterations()  # CG its, adjoint filter
 
-                    Riesz.solve(g_k, assemble(inner(lam2, TestFunction(A)) * dx))
+                    Riesz.solve(g_k, gk_dual)
 
                     riesz_its = Riesz.ksp.getIterationNumber()
 
@@ -408,13 +462,14 @@ class SiMPL(object):
                         alpha_c.assign(alpha_step)
 
                         psi_new.interpolate(psi_half - alpha_c * mu_val_c)
-                        rho_k.interpolate(sigma(psi_new))
+                        rho_k.interpolate(self.sigma(psi_new))
 
                         J_new = float(self.build_functional(filter_solver, NS_solver, Jobj))
                         difference.interpolate(rho_k - rho_old)
-                        descent = assemble(g_k * difference * dx)
+                        descent = assemble(action(gk_dual, difference))
 
                         if descent > 0:
+                            PETSc.Sys.Print(f"  k={k}: non-descent direction (descent={descent:.3e})")
                             break
 
                         if simpl_type == "A":
@@ -430,6 +485,9 @@ class SiMPL(object):
                         if n_bt > max_backtrack:
                             break
 
+                    if descent > 0:
+                        PETSc.Sys.Print(f"  k={k}: non-descent direction (descent={descent:.3e})")
+                        break
                     if n_bt > max_backtrack:
                         PETSc.Sys.Print(f"  k={k}: maximum backtracking iterations reached.")
                         break
@@ -489,7 +547,7 @@ class SiMPL(object):
                     psi_prev.assign(psi_k)
                     g_prev.assign(g_k)
                     rho_filtered_prev.assign(rho_k_filtered)
-                    rho_viz.interpolate(sigma(psi_new))
+                    rho_viz.interpolate(self.sigma(psi_new))
                     alpha_prev = alpha_step
                     g_initialised = True
 
@@ -569,15 +627,15 @@ class SiMPL(object):
     def forward_sp(self):
         sp = {
             'mat_type': 'matfree',
-            #'snes_monitor': None,
+            'snes_monitor': None,
             #'snes_converged_reason': None,
             'snes_max_it': 20,
             'snes_atol': 1e-8,
             'snes_rtol': 1e-12,
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
-            #'ksp_converged_reason': None,
-            #'ksp_monitor_true_residual': None,
+            # 'ksp_converged_reason': None,
+            'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
             'ksp_atol': 1e-08,
             'ksp_rtol': 1e-10,
@@ -611,10 +669,10 @@ class SiMPL(object):
         }
         return sp
 
-    def adj_sp(self):
-        sp_adj = {
+    def sp_adj(self):
+        adj_sp = {
             'mat_type': 'matfree',
-            #'snes_monitor': None,
+            'snes_monitor': None,
             #'snes_converged_reason': None,
             'snes_max_it': 20,
             'snes_atol': 1e-8,
@@ -622,7 +680,7 @@ class SiMPL(object):
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
             #'ksp_converged_reason': None,
-            #'ksp_monitor_true_residual': None,
+            'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
             'ksp_atol': 1e-08,
             'ksp_rtol': 1e-10,
@@ -654,6 +712,6 @@ class SiMPL(object):
                 },
             },
         }
-        return sp_adj
+        return adj_sp
 
     
