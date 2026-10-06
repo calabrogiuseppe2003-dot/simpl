@@ -3,9 +3,9 @@ from firedrake.adjoint import *
 from .logging import *
 from .simpl import *
 
-class NavierStokes(SiMPL):
+class NavierStokesMTW(SiMPL):
     def primal_function_space(self, mesh):
-        U_h = FunctionSpace(mesh, "MTW", 1)          # function space velocity
+        U_h = FunctionSpace(mesh, "MTW", 1) # function space velocity
         P_h = FunctionSpace(mesh, "DG", 0)  # function space pressure
         W = MixedFunctionSpace([U_h, P_h])
         return W
@@ -59,21 +59,30 @@ class NavierStokes(SiMPL):
         (u, p) = split(w)
         (v, q_test) = split(y_test)
         gamma = self.gamma
-        Fp = Res - inner(p/gamma, q_test)*dx  + inner(div(u)*gamma, div(v))*dx  # preconditioned residual
-        Jp = derivative(Fp, w)  # preconditioned jacobian
+
         J = derivative(Res, w)  #jacobian
 
+        if self.forward_sp()["pc_type"] == "fieldsplit":
+            Fp = Res - inner(p/gamma, q_test)*dx  + inner(div(u)*gamma, div(v))*dx  # preconditioned residual 
+        else:
+            Fp = Res + inner(div(u)*gamma, div(v))*dx
+        Jp = derivative(Fp, w)  # preconditioned jacobian
+        
+
         problem = NonlinearVariationalProblem(Res, w, J=J , Jp=Jp, bcs=bcs)
-        solver = NonlinearVariationalSolver(problem, solver_parameters = self.forward_sp())
+        solver = NonlinearVariationalSolver(problem, solver_parameters=self.forward_sp(), pre_apply_bcs=False)
 
         Jobj = self.construct_Jobj(w, rho_k_filtered)
 
         adjA = adjoint(derivative(Res, w))
         rhs = -derivative(Jobj, w)
-        JpT = adjoint(Jp)
+        if self.forward_sp()["pc_type"] == self.adj_sp()["pc_type"]:
+            JpT = adjoint(Jp)
+        else:
+            error("Currently require same pc for adjoint and forward solves.")
         bcs_hom = homogenize(bcs)
         adj_prob = LinearVariationalProblem(adjA, rhs, lam, aP=JpT, bcs=bcs_hom)
-        adj_solver = LinearVariationalSolver(adj_prob, solver_parameters=self.adj_sp())
+        adj_solver = LinearVariationalSolver(adj_prob, solver_parameters=self.adj_sp(), pre_apply_bcs=True)
         return solver, adj_solver, Jobj
 
     def  construct_Jobj(self, w, rho_k_filtered):

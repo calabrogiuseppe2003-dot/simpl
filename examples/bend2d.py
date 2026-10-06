@@ -4,10 +4,10 @@ from meshgenbend import create_geometry_bend
 import os
 from simpl import *
 
-class Bend2D(NavierStokes):
+class Bend2D(NavierStokesMTW):
 
     def mesh(self):
-        maxh = 0.2
+        maxh = 0.05
         ngmesh, markers = create_geometry_bend(maxh)
         base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
         mh   = MeshHierarchy(base, 2)
@@ -45,13 +45,15 @@ class Bend2D(NavierStokes):
 
     def forward_sp(self):
         sp ={
+            "snes_type": "newtonls",
             "mat_type": "aij",
             "snes_monitor": None,
-            "ksp_type": "fgmres",
+            "ksp_type": "preonly",
             "snes_atol": 1e-6,
-            "ksp_monitor": None,
+            # "ksp_monitor": None,
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
+            # "snes_linesearch_type": "basic",
         }
         return sp
 
@@ -187,8 +189,7 @@ if __name__ == "__main__":
     nu            = 1.0 / Re       # nondimensional viscosity used in the forward problem
     alphaunderbar = 2.5 * mu / (1 / 5**2)   # alpha_min in the original dimensional scaling
     alphabar      = 1e4 * alphaunderbar     # alpha_max in the original dimensional scaling
-    volfrac       = 1/4            # fluid volume fraction
-    target_volume = volfrac
+    target_volume = 1/4
     alpha_init    = 2.5 * mu / (0.1**2)
     r_min         = 0.04                  #filter radius
     gamma         = Constant(1e4)        # augmented lagrangian penalty-coefficient
