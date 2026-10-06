@@ -1,5 +1,6 @@
 from firedrake import *
 from firedrake.adjoint import *
+from .logging import *
 import numpy as np
 from firedrake.petsc import PETSc
 import os
@@ -8,7 +9,7 @@ from collections.abc import Iterable
 import csv
 
 class SiMPL(object):
-    def __init__(self, Re, gamma, alphaunderbar, alphabar, q, r_min, mu):
+    def __init__(self, Re, gamma, alphaunderbar, alphabar, r_min, mu):
         self.mesh = self.mesh()
         self.comm  = self.mesh.comm
         self.rank0 = (self.comm.rank == 0)
@@ -16,9 +17,9 @@ class SiMPL(object):
         self.gamma = gamma
         self.alphaunderbar = alphaunderbar
         self.alphabar = alphabar
-        self.q = q
         self.r_min = r_min
         self.mu = mu
+        self.q = Constant(1)
         self.setup_parameters = self.setup(self.mesh)
 
     def density_function_space(self, mesh):
@@ -29,7 +30,7 @@ class SiMPL(object):
 
     def velocity_function_space(self, mesh):
         U_h = FunctionSpace(mesh, "MTW", 1)          # function space velocity
-        P_h = FunctionSpace(mesh, "DG", 0, variant = "integral")  # function space pressure
+        P_h = FunctionSpace(mesh, "DG", 0)  # function space pressure
         W = MixedFunctionSpace([U_h, P_h])
         return W
 
@@ -62,18 +63,18 @@ class SiMPL(object):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx#(degree=8)
-                    - inner(u ,div(outer(v,u)))*dx(degree=10)
-                    + inner(v('+')-v('-'), uflux_int('+')-uflux_int('-'))*dS(degree=8)
+                    - inner(u ,div(outer(v,u)))*dx#(degree=10)
+                    + inner(v('+')-v('-'), uflux_int('+')-uflux_int('-'))*dS#(degree=8)
                     - inner(p, div(v))*dx#(degree=8)
                     - inner(q_test, div(u))*dx#(degree=8)
-                    + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx(degree=8)
+                    + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx#(degree=8)
             )
         def c_bc(u, v, bid, g):
             if g is None:
                 uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u
             else:
                 uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u + 0.5*(inner(u,n)-abs(inner(u,n)))*g
-            return dot(v, uflux_ext)*ds(bid,degree=10)
+            return dot(v, uflux_ext)*ds(bid)#,degree=10)
         exterior_markers = set(mesh.exterior_facets.unique_markers)
 
         for bc in bcs:
@@ -138,7 +139,7 @@ class SiMPL(object):
         Jobj = 0.5 * (
             2.0*mu * inner(sym(grad(u)), sym(grad(u)))
             + self.alpha_perm(rho_k_filtered) * inner(u, u)
-        ) * dx(degree=10)
+        ) * dx#(degree=10)
         return Jobj
 
     def setup(self, mesh):
@@ -147,8 +148,9 @@ class SiMPL(object):
 
         Riesz = self.construct_Riesz_solver(A)
 
-        rho_k = Function(A)  #density function
-        rho_k_filtered = Function(F)  #filtered density
+        rho_k = Function(A)  # density function
+        rho_k_filtered = Function(F)  # filtered density
+        rho_k_filtered.rename("Filtered Density")
         w = Function(W)  # create function to hold the solution (u,p)
         (u, p) = split(w)
 
@@ -173,8 +175,7 @@ class SiMPL(object):
         dFdrho = -derivative(L, rho_k)
         dJdrho_form = action(adjoint(dFdrho), lam2)
 
-        if self.rank0:
-            PETSc.Sys.Print(f"Velocity DoFs: {W.sub(0).dim()}, Pressure DoFs: {W.sub(1).dim()}, Density DoFs: {A.dim()}")
+        info_g(f"Velocity DoFs: {W.sub(0).dim()}, Pressure DoFs: {W.sub(1).dim()}, Density DoFs: {A.dim()}")
 
         return A, F, VIZ, w, rho_k, rho_k_filtered, Jobj, Riesz, NS_solver, filter_solver, _adj_solver, _filter_adj_solver, dJdrho_form 
 
@@ -264,14 +265,15 @@ class SiMPL(object):
         b = float(-min_val)
 
         if b <= 0.0:
-            if self.rank0:
-                PETSc.Sys.Print("Warning: non-positive b in find_mu. Returning 0.0.")
+            info_r("Warning: non-positive b in find_mu. Returning 0.0.")
             return 0.0
 
         return self.illinois(residual, 0.0, b)
 
     def build_functional(self, filter_solver, NS_solver, Jobj):
+        info_b("Starting filter solve.")
         filter_solver.solve()
+        info_b("Starting forward solve.")
         NS_solver.solve()
         return assemble(Jobj)
 
@@ -279,29 +281,30 @@ class SiMPL(object):
     def compute_derivative(self, _adj_solver, _filter_adj_solver, dJdrho_form):
         """Solve the two adjoint systems (already built/factorised once
         above) and return the reduced gradient as an assembled cofunction."""
+        info_b("Starting adjoint solve.")
         _adj_solver.solve()
+        info_b("Starting filter adjoint solve.")
         _filter_adj_solver.solve()
         return assemble(dJdrho_form)
 
     def continuation_solve(self, Re_v, output_dir):
         w = self.setup_parameters[3]
         Re = self.Re
-        q = self.q
         NS_solver = self.setup_parameters[8]
 
-        if float(Re) > 5:
-            PETSc.Sys.Print(f"Using continuing strategy to reach Re={float(Re)}, with q={float(q)}.")
-            Re_final = int(float(Re))
-            if Re_v[-1] != Re_final:
-                Re_v.append(Re_final)
+        info_g(f"Using continuing strategy to reach Re={float(Re)}.")
+        Re_final = int(float(Re))
+        if Re_v[-1] != Re_final:
+            Re_v.append(Re_final)
 
-            u_curr, p_curr = w.subfunctions
+        u_curr, p_curr = w.subfunctions
 
-            for Re_ in Re_v:
-                PETSc.Sys.Print(f"Current Re={Re_}")
-                Re.assign(Re_)
-                NS_solver.solve()
-                VTKFile(f"{output_dir}/velocity_latest.pvd").write(u_curr)
+        for Re_ in Re_v:
+            info_g(f"Current Re={Re_}")
+            Re.assign(Re_)
+            info_b("Starting forward solve.")
+            NS_solver.solve()
+            VTKFile(f"{output_dir}/velocity_latest.pvd").write(u_curr)
 
     def simpl(
         self,
@@ -331,6 +334,7 @@ class SiMPL(object):
         # Preallocate all working Functions BEFORE the closures that use them
         # ------------------------------------------------------------------
         rho_viz = Function(VIZ)
+        rho_viz.rename("Filtered density")
         rho_filtered_prev = Function(F, name="rho_filtered_prev")
         psi_k = Function(A, name="psi_k")
         psi_prev = Function(A, name="psi_prev")
@@ -344,6 +348,7 @@ class SiMPL(object):
         difference = Function(A, name="Difference")
         mu_c = Constant(0.0)
         u_curr, p_curr = w.subfunctions  # current velocity and pressure
+        u_curr.rename("Velocity")
 
         alpha_c = Constant(1.0)
         mu_val_c = Constant(0.0)
@@ -360,6 +365,7 @@ class SiMPL(object):
         # ------------------------------------------------------------------
         rho_k.assign((Constant(float(target_volume))))
         psi_k.interpolate(self.sigma_inv(rho_k))
+        info_b("Starting filter solve.")
         filter_solver.solve()
         rho_filtered_prev.assign(rho_k_filtered)
 
@@ -406,9 +412,9 @@ class SiMPL(object):
             # Outer loop over q-continuation stages
             # ------------------------------------------------------------------
             for stage, (q_value, niter) in enumerate(zip(q_values, iters_per_q), start=1):
-                PETSc.Sys.Print(f"\n{'=' * 60}")
-                PETSc.Sys.Print(f"Stage {stage}: q = {float(q_value)}, max_iter = {niter}")
-                PETSc.Sys.Print(f"{'=' * 60}")
+                info_g(f"\n{'=' * 60}")
+                info_g(f"Stage {stage}: q = {float(q_value)}, max_iter = {niter}")
+                info_g(f"{'=' * 60}")
 
                 self.q.assign(float(q_value))
 
@@ -430,6 +436,7 @@ class SiMPL(object):
                     adj_ns_its = _adj_solver.snes.getLinearSolveIterations()      # FGMRES its, adjoint NS
                     filter_adj_its = _filter_adj_solver.snes.getLinearSolveIterations()  # CG its, adjoint filter
 
+                    info_b("Starting Riesz solve.")
                     Riesz.solve(g_k, gk_dual)
 
                     riesz_its = Riesz.ksp.getIterationNumber()
@@ -438,7 +445,7 @@ class SiMPL(object):
                         gnorm = gvec.norm(PETSc.NormType.NORM_INFINITY)
 
                     if gnorm < 1e-14:
-                        PETSc.Sys.Print(f"  k={k}: zero gradient — stopping.")
+                        info_r(f"  k={k}: zero gradient — stopping.")
                         converged = True
                         break
 
@@ -469,7 +476,7 @@ class SiMPL(object):
                         descent = assemble(action(gk_dual, difference))
 
                         if descent > 0:
-                            PETSc.Sys.Print(f"  k={k}: non-descent direction (descent={descent:.3e})")
+                            info_r(f"  k={k}: non-descent direction (descent={descent:.3e})")
                             break
 
                         if simpl_type == "A":
@@ -486,13 +493,13 @@ class SiMPL(object):
                             break
 
                     if descent > 0:
-                        PETSc.Sys.Print(f"  k={k}: non-descent direction (descent={descent:.3e})")
+                        info_r(f"  k={k}: non-descent direction (descent={descent:.3e})")
                         break
                     if n_bt > max_backtrack:
-                        PETSc.Sys.Print(f"  k={k}: maximum backtracking iterations reached.")
+                        info_r(f"  k={k}: maximum backtracking iterations reached.")
                         break
                     if alpha_step < 1e-8:
-                        PETSc.Sys.Print(f"  k={k}: step size too small during backtracking.")
+                        info_r(f"  k={k}: step size too small during backtracking.")
                         break
 
                     nonlinear_its = NS_solver.snes.getIterationNumber()
@@ -510,7 +517,7 @@ class SiMPL(object):
                         kkt_rel = abs(kkt) / kkt0
                     descent_val = float(descent)
                     vol = assemble(rho_k * dx)
-                    PETSc.Sys.Print(
+                    info_b(
                         f"  k={k:3d}  J={J_new:.6e}  "
                         f"KKT={kkt:.3e}  descent={descent_val:.3e}  vol={vol:.4f}  α={alpha_step:.3e}  bt={n_bt}  "
                         f"Newton={nonlinear_its}  Krylov={linear_its} ({krylov_per_newton:.1f}/Newton)  "
@@ -564,7 +571,7 @@ class SiMPL(object):
 
                     # ---- Convergence check ---------------------------------
                     if kkt_rel <= tol or descent_val >= -descent_tol:
-                        PETSc.Sys.Print(
+                        info_g(
                             f"  Stage {stage}: converged (KKT + descent) in {k + 1} iterations."
                         )
                         converged = True
@@ -584,7 +591,7 @@ class SiMPL(object):
                     stage_file.flush()
 
                 if not converged:
-                    PETSc.Sys.Print(f"  Stage {stage}: maximum iterations reached without convergence.")
+                    info_r(f"  Stage {stage}: maximum iterations reached without convergence.")
 
             VTKFile(f"{output_dir}/rho_final.pvd").write(rho_viz)
             VTKFile(f"{output_dir}/velocity_final.pvd").write(u_curr)
@@ -600,15 +607,15 @@ class SiMPL(object):
         avg_krylov_per_newton = _safe_mean(krylov_per_newton_history)
 
         if self.rank0:
-            PETSc.Sys.Print(f"\n{'=' * 60}")
-            PETSc.Sys.Print("Average solver iterations over the whole optimization run:")
-            PETSc.Sys.Print(f"  Riesz / mass-matrix inversion (CG) ......... {avg_riesz:.2f}")
-            PETSc.Sys.Print(f"  Forward filter solve (CG) ................. {avg_filter_fwd:.2f}")
-            PETSc.Sys.Print(f"  Adjoint filter solve (CG) .................. {avg_filter_adj:.2f}")
-            PETSc.Sys.Print(f"  Adjoint Navier-Stokes solve (FGMRES) ....... {avg_adj_ns:.2f}")
-            PETSc.Sys.Print(f"  Forward Navier-Stokes Newton iterations .... {avg_newton_its:.2f}")
-            PETSc.Sys.Print(f"  Forward Navier-Stokes FGMRES per Newton .... {avg_krylov_per_newton:.2f}")
-            PETSc.Sys.Print(f"{'=' * 60}")
+            info_g(f"\n{'=' * 60}")
+            info_g("Average solver iterations over the whole optimization run:")
+            info_g(f"  Riesz / mass-matrix inversion (CG) ......... {avg_riesz:.2f}")
+            info_g(f"  Forward filter solve (CG) ................. {avg_filter_fwd:.2f}")
+            info_g(f"  Adjoint filter solve (CG) .................. {avg_filter_adj:.2f}")
+            info_g(f"  Adjoint Navier-Stokes solve (FGMRES) ....... {avg_adj_ns:.2f}")
+            info_g(f"  Forward Navier-Stokes Newton iterations .... {avg_newton_its:.2f}")
+            info_g(f"  Forward Navier-Stokes FGMRES per Newton .... {avg_krylov_per_newton:.2f}")
+            info_g(f"{'=' * 60}")
 
             summary_path = f"{output_dir}/solver_iterations_summary.csv"
             with open(summary_path, "w", newline="") as f:
@@ -630,15 +637,15 @@ class SiMPL(object):
             'snes_monitor': None,
             #'snes_converged_reason': None,
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
-            'snes_rtol': 1e-12,
+            'snes_atol': 1e-6,
+            'snes_rtol': 1e-8,
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
             # 'ksp_converged_reason': None,
             'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
-            'ksp_atol': 1e-08,
-            'ksp_rtol': 1e-10,
+            'ksp_atol': 1e-7,
+            'ksp_rtol': 1e-9,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
             'pc_fieldsplit_schur_factorization_type': 'full',
@@ -650,20 +657,20 @@ class SiMPL(object):
                 'pc_type': 'python',
                 'pc_python_type': 'firedrake.AssembledPC',
                 'assembled': {
-                'pc_use_amat': False,
-                'pc_type': 'mg',
-                'pc_mg_type': 'full',
-                'mg_coarse_mat_type': 'aij',
-                'mg_coarse_pc_type': 'lu',
-                'mg_coarse_pc_factor_mat_solver_type': 'mumps',
-                'mg_coarse_mat_mumps_icntl_14': 1000,
-                'mg_levels': {
-                    'ksp_convergence_test': 'skip',
-                    'ksp_max_it': 5,
-                    'ksp_type': 'fgmres',
-                    'pc_type': 'python',
-                    'pc_python_type': 'firedrake.ASMStarPC',
-                },
+                    'pc_use_amat': False,
+                    'pc_type': 'mg',
+                    'pc_mg_type': 'full',
+                    'mg_coarse_mat_type': 'aij',
+                    'mg_coarse_pc_type': 'lu',
+                    'mg_coarse_pc_factor_mat_solver_type': 'mumps',
+                    'mg_coarse_mat_mumps_icntl_14': 1000,
+                    'mg_levels': {
+                        'ksp_convergence_test': 'skip',
+                        'ksp_max_it': 5,
+                        'ksp_type': 'gmres',
+                        'pc_type': 'python',
+                        'pc_python_type': 'firedrake.ASMStarPC',
+                    },
                 },
             },
         }
@@ -675,15 +682,15 @@ class SiMPL(object):
             'snes_monitor': None,
             #'snes_converged_reason': None,
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
-            'snes_rtol': 1e-12,
+            'snes_atol': 1e-6,
+            'snes_rtol': 1e-8,
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
             #'ksp_converged_reason': None,
             'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
-            'ksp_atol': 1e-08,
-            'ksp_rtol': 1e-10,
+            'ksp_atol': 1e-07,
+            'ksp_rtol': 1e-9,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
             'pc_fieldsplit_schur_factorization_type': 'full',
@@ -705,7 +712,7 @@ class SiMPL(object):
                 'mg_levels': {
                     'ksp_convergence_test': 'skip',
                     'ksp_max_it': 5,
-                    'ksp_type': 'fgmres',
+                    'ksp_type': 'gmres',
                     'pc_type': 'python',
                     'pc_python_type': 'firedrake.ASMStarPC',
                 },

@@ -15,7 +15,7 @@ from firedrake import DistributedMeshOverlapType
 # Problem parameters
 # --------------------------------------------------------------------
 
-Re            = Constant(5000)  # Reynolds number
+Re            = Constant(1)  # Reynolds number
 gbar          = 1.0           # max inlet/outlet velocity
 dens          = Constant(1.0)  # density
 l              = 1/5
@@ -215,7 +215,7 @@ sp_adj = {
 
 sp = {
     'mat_type': 'matfree',
-    #'snes_monitor': None,
+    'snes_monitor': None,
     #'snes_converged_reason': None,
     'snes_max_it': 20,
     'snes_atol': 1e-8,
@@ -223,7 +223,7 @@ sp = {
     'snes_stol': 1e-06,
     'ksp_type': 'fgmres',
     #'ksp_converged_reason': None,
-    #'ksp_monitor_true_residual': None,
+    'ksp_monitor_true_residual': None,
     'ksp_max_it': 300,
     'ksp_atol': 1e-08,
     'ksp_rtol': 1e-10,
