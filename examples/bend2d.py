@@ -4,7 +4,7 @@ from meshgenbend import create_geometry_bend
 import os
 from simpl import *
 
-class Bend2D(SiMPL):
+class Bend2D(NavierStokes):
 
     def mesh(self):
         maxh = 0.2
@@ -42,6 +42,142 @@ class Bend2D(SiMPL):
             DirichletBC(W.sub(0), as_vector([val1,0.0]), LEFT_INLET),
         ]
         return bcs
+
+    def forward_sp(self):
+        sp ={
+            "mat_type": "aij",
+            "snes_monitor": None,
+            "ksp_type": "fgmres",
+            "snes_atol": 1e-6,
+            "ksp_monitor": None,
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+        }
+        return sp
+
+    def adj_sp(self):
+        return self.forward_sp()
+
+    def filter_sp(self):
+        return self.forward_sp()
+
+    def adj_filter_sp(self):
+        return self.forward_sp()
+    
+    def _forward_sp(self):
+        sp = {
+            'mat_type': 'matfree',
+            'snes_monitor': None,
+            #'snes_converged_reason': None,
+            'snes_max_it': 20,
+            'snes_atol': 1e-6,
+            'snes_rtol': 1e-8,
+            'snes_stol': 1e-06,
+            'ksp_type': 'fgmres',
+            # 'ksp_converged_reason': None,
+            'ksp_monitor_true_residual': None,
+            'ksp_max_it': 300,
+            'ksp_atol': 1e-7,
+            'ksp_rtol': 1e-9,
+            'pc_type': 'fieldsplit',
+            'pc_fieldsplit_type': 'schur',
+            'pc_fieldsplit_schur_factorization_type': 'full',
+            'pc_fieldsplit_0_fields': 1,
+            'pc_fieldsplit_1_fields': 0,
+            'fieldsplit_ksp_type': 'preonly',
+            'fieldsplit_0_pc_type': 'jacobi',
+            'fieldsplit_1': {
+                'pc_type': 'python',
+                'pc_python_type': 'firedrake.AssembledPC',
+                'assembled': {
+                    'pc_use_amat': False,
+                    'pc_type': 'mg',
+                    'pc_mg_type': 'full',
+                    'mg_coarse_mat_type': 'aij',
+                    'mg_coarse_pc_type': 'lu',
+                    'mg_coarse_pc_factor_mat_solver_type': 'mumps',
+                    'mg_coarse_mat_mumps_icntl_14': 1000,
+                    'mg_levels': {
+                        'ksp_convergence_test': 'skip',
+                        'ksp_max_it': 5,
+                        'ksp_type': 'gmres',
+                        'pc_type': 'python',
+                        'pc_python_type': 'firedrake.ASMStarPC',
+                    },
+                },
+            },
+        }
+        return sp
+
+    def _adj_sp(self):
+        sp = {
+            'mat_type': 'matfree',
+            'snes_monitor': None,
+            #'snes_converged_reason': None,
+            'snes_max_it': 20,
+            'snes_atol': 1e-6,
+            'snes_rtol': 1e-8,
+            'snes_stol': 1e-06,
+            'ksp_type': 'fgmres',
+            #'ksp_converged_reason': None,
+            'ksp_monitor_true_residual': None,
+            'ksp_max_it': 300,
+            'ksp_atol': 1e-07,
+            'ksp_rtol': 1e-9,
+            'pc_type': 'fieldsplit',
+            'pc_fieldsplit_type': 'schur',
+            'pc_fieldsplit_schur_factorization_type': 'full',
+            'pc_fieldsplit_0_fields': 1,
+            'pc_fieldsplit_1_fields': 0,
+            'fieldsplit_ksp_type': 'preonly',
+            'fieldsplit_0_pc_type': 'jacobi',
+            'fieldsplit_1': {
+                'pc_type': 'python',
+                'pc_python_type': 'firedrake.AssembledPC',
+                'assembled': {
+                'pc_use_amat': False,
+                'pc_type': 'mg',
+                'pc_mg_type': 'full',
+                'mg_coarse_mat_type': 'aij',
+                'mg_coarse_pc_type': 'lu',
+                'mg_coarse_pc_factor_mat_solver_type': 'mumps',
+                'mg_coarse_mat_mumps_icntl_14': 1000,
+                'mg_levels': {
+                    'ksp_convergence_test': 'skip',
+                    'ksp_max_it': 5,
+                    'ksp_type': 'gmres',
+                    'pc_type': 'python',
+                    'pc_python_type': 'firedrake.ASMStarPC',
+                },
+                },
+            },
+        }
+        return sp
+
+    def _filter_sp(self):
+        sp = {
+            "ksp_type": "cg", # use conjugate gradients
+            "ksp_monitor": None, # print info about iteration
+            "ksp_rtol": 1.0e-10, # residual relative tolerance
+            "pc_type": "mg", # use geometric multigrid
+        }
+        return sp
+
+    def _adj_filter_sp(self):
+        sp = {
+            "ksp_type": "cg", # use conjugate gradients
+            "ksp_monitor": None, # print info about iteration
+            "ksp_rtol": 1.0e-10, # residual relative tolerance
+            "pc_type": "mg", # use geometric multigrid
+        }
+        return sp
+
+    def riesz_sp(self):
+        sp = {
+            "ksp_type": "preonly",
+            "pc_type": "jacobi",
+        }
+        return sp
 
 if __name__ == "__main__":
     Re            = Constant(1)  # Reynolds number
