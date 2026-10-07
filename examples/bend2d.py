@@ -209,8 +209,7 @@ if __name__ == "__main__":
     if problem.rank0:
         os.makedirs("output", exist_ok=True)
         os.makedirs("output", exist_ok=True)
-
-    problem.comm.barrier()
+        problem.comm.barrier()
 
     # Re_v = [1,10, float(Re)]
     # problem.continuation_solve(Re_v, "output")
