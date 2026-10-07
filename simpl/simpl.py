@@ -73,7 +73,7 @@ class SiMPL:
         raise NotImplementedError
 
     def projection_sp(self):
-        raise NotImplementedError
+        return {"ksp_type": "preonly", "pc_type": "jacobi"}
 
     def construct_projection_solver(self, A, lam2, g_k):
         a_test = TestFunction(A)
@@ -211,6 +211,12 @@ class SiMPL:
         info_b("Starting adjoint filter solve.")
         filter_adj_solver.solve()
 
+    def initialise_save_solutions(self, rho_k, rho_k_filtered, w):
+        raise NotImplementedError
+
+    def save_solutions(self, rho_k, rho_k_filtered, w):
+        raise NotImplementedError
+
     def simpl(
         self,
         tol,
@@ -250,18 +256,14 @@ class SiMPL:
 
         difference = Function(A, name="Difference")
         mu_c = Constant(0.0)
-        u_curr, p_curr = w.subfunctions  # current velocity and pressure
-        u_curr.rename("Velocity")
 
         alpha_c = Constant(1.0)
         mu_val_c = Constant(0.0)
 
-
-
         # ------------------------------------------------------------------
         # Initialise
         # ------------------------------------------------------------------
-        rho_k.assign((Constant(float(target_volume))))
+        rho_k.assign(target_volume)
         psi_k.interpolate(self.sigma_inv(rho_k))
 
         if self.rank0:
@@ -269,11 +271,7 @@ class SiMPL:
         self.comm.barrier()
 
         if save_iterates:
-            controls = VTKFile(f"{output_dir}/control_iterations.pvd")
-            rhofilts = VTKFile(f"{output_dir}/rho_filtered_iterations.pvd")
-            velocities = VTKFile(f"{output_dir}/velocity_iterations.pvd")
-
-            controls.write(rho_k)
+            self.initialize_save_solutions(w, rho_k_filtered, rho_k, output_dir)
 
         log_path = f"{output_dir}/iterations.csv"
         stage_summary_path = f"{output_dir}/stage_summary.csv"
@@ -463,9 +461,7 @@ class SiMPL:
                     psi_k.assign(psi_new)
 
                     if save_iterates:
-                        controls.write(rho_k)
-                        rhofilts.write(rho_k_filtered)
-                        velocities.write(u_curr)
+                        self.save_solutions(w, rho_k_filtered, rho_k)
 
                     # ---- Convergence check ---------------------------------
                     if kkt_rel <= tol or descent_val >= -descent_tol:
@@ -490,10 +486,8 @@ class SiMPL:
 
                 if not converged:
                     info_r(f"  Stage {stage}: maximum iterations reached without convergence.")
-
-            VTKFile(f"{output_dir}/rho_final.pvd").write(rho_k)
-            VTKFile(f"{output_dir}/rho_filtered_final.pvd").write(rho_k_filtered)
-            VTKFile(f"{output_dir}/velocity_final.pvd").write(u_curr)
+            if save_iterates:
+                self.save_solutions(w, rho_k_filtered, rho_k)
 
         def _safe_mean(history):
             return float(np.mean(history)) if len(history) > 0 else float("nan")

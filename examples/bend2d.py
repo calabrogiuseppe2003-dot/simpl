@@ -174,16 +174,6 @@ class Bend2D(NavierStokesMTW):
         }
         return sp
 
-    def projection_sp(self):
-        sp = {
-            # "ksp_type": "cg",
-            # "ksp_atol": 1e-6,
-            # "ksp_rtol": 1e-6,
-            "ksp_type": "preonly",
-            "pc_type": "jacobi",
-        }
-        return sp
-
 if __name__ == "__main__":
     Re            = Constant(1)  # Reynolds number
     gbar          = 1.0           # max inlet/outlet velocity
@@ -203,7 +193,7 @@ if __name__ == "__main__":
 
 
     
-    problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu)
+    problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
 
 
     if problem.rank0:
@@ -220,4 +210,5 @@ if __name__ == "__main__":
                   iters_per_q = iters_per_q,
                   c1=c1,
                   simpl_type="A",
-                  max_backtrack=10)
+                  max_backtrack=10,
+                  save_iterates=True)

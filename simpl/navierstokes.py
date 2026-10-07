@@ -80,6 +80,25 @@ class NavierStokes(SiMPL):
         if save_file:
             VTKFile(f"{output_dir}/Velocity_{float(Re)}.pvd").write(u_curr)
 
+    def initialize_save_solutions(self, w, rho_k_filtered, rho_k, output_dir):
+        control_vtk = VTKFile(f"{output_dir}/control_iterations.pvd")
+        rhofilt_vtk = VTKFile(f"{output_dir}/rho_filtered_iterations.pvd")
+        velocities_vtk = VTKFile(f"{output_dir}/velocity_iterations.pvd")
+        control_vtk.write(rho_k)
+        (u, _) = w.subfunctions
+        u.rename("Velocity")
+        self.control_vtk = control_vtk
+        self.rhofilt_vtk = rhofilt_vtk
+        self.velocities_vtk = velocities_vtk
+
+    def save_solutions(self, w, rho_k_filtered, rho_k):
+        (u, p) = w.subfunctions
+        self.control_vtk.write(rho_k)
+        self.rhofilt_vtk.write(rho_k_filtered)
+        self.velocities_vtk.write(u)
+
+
+
 
 # MTW discretization for Navier-Stokes
 class NavierStokesMTW(NavierStokes):
