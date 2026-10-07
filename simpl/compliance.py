@@ -32,7 +32,6 @@ class Compliance(SiMPL):
         return VectorFunctionSpace(mesh, "CG", 1)
 
     def simp(self, rho):
-        """Young's modulus evaluated at the filtered density."""
         return self.E_min + (Constant(1) - self.E_min) * rho**self.q
 
     def stress(self, u, rho):
@@ -40,7 +39,6 @@ class Compliance(SiMPL):
         return k * (2.0 * self.mu * sym(grad(u)) + self.lmbda * div(u) * Identity(self.mesh.topological_dimension))
 
     def load_form(self, v):
-        """Return load work, e.g. inner(body_force, v)*dx + inner(traction, v)*ds."""
         raise NotImplementedError
 
     def forward_form(self, mesh, rho_k_filtered, w, y_test, bcs):
