@@ -260,10 +260,13 @@ class SiMPL:
         alpha_c = Constant(1.0)
         mu_val_c = Constant(0.0)
 
+
+
         # ------------------------------------------------------------------
         # Initialise
         # ------------------------------------------------------------------
-        rho_k.assign(target_volume)
+        domain_volume = float(assemble(Constant(1.0) * dx(domain=self.mesh)))
+        rho_k.assign(target_volume/domain_volume)
         psi_k.interpolate(self.sigma_inv(rho_k))
 
         if self.rank0:
