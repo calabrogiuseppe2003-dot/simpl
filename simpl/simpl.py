@@ -9,18 +9,45 @@ from collections.abc import Iterable
 import csv
 
 class SiMPL:
-    def __init__(self, Re, gamma, alphaunderbar, alphabar, r_min, mu):
+    def __init__(self, r_min):
         self.mesh = self.mesh()
         self.comm  = self.mesh.comm
         self.rank0 = (self.comm.rank == 0)
-        self.Re = Re
-        self.gamma = gamma
-        self.alphaunderbar = alphaunderbar
-        self.alphabar = alphabar
         self.r_min = r_min
-        self.mu = mu
         self.q = Constant(1)
         self.setup_parameters = self.setup(self.mesh)
+
+    def setup(self, mesh):
+        A, F = self.density_function_spaces(mesh)
+        W = self.primal_function_space(mesh)
+
+        rho_k = Function(A)  # density function
+        rho_k_filtered = Function(F)  # filtered density
+        rho_k_filtered.rename("Filtered Density")
+        w = Function(W)  # create function to hold the solution (u,p)
+
+        y_test = TestFunction(W)
+        lam = Function(W)  # primal adjoint
+        lam2 = Function(F) # filter adjoint
+        g_k = Function(A)
+
+        projection = self.construct_projection_solver(A, lam2, g_k)
+
+        bcs = self.boundary_conditions(W)
+        Res = self.forward_form(mesh, rho_k_filtered, w, y_test, bcs)
+        forward_solver, adj_solver, Jobj = self.construct_primal_solvers(Res, w, lam, y_test, rho_k_filtered, bcs)
+
+
+        # dJ/d(rho_filtered) (built once, symbolic)
+        dFdrhof = derivative(Res, rho_k_filtered)
+        dJdrhof = derivative(Jobj, rho_k_filtered) + action(adjoint(dFdrhof), lam)
+
+        filter_solver, filter_adj_solver = self.construct_filter_solvers(F, rho_k, rho_k_filtered, lam2, dJdrhof)
+
+
+        info_g(f"Primal DoFs: {W.dim()}, Density DoFs: {A.dim()}")
+
+        return A, w, rho_k, rho_k_filtered, g_k, Jobj, projection, forward_solver, filter_solver, adj_solver, filter_adj_solver
 
     def density_function_spaces(self, mesh):
         A    = FunctionSpace(mesh, "DG", 0)  # function space for rho
@@ -45,13 +72,17 @@ class SiMPL:
     def adj_filter_sp(self):
         raise NotImplementedError
 
-    def riesz_sp(self):
+    def projection_sp(self):
         raise NotImplementedError
 
-    def construct_Riesz_solver(self, A):
+    def construct_projection_solver(self, A, lam2, g_k):
         a_test = TestFunction(A)
         b_trial = TrialFunction(A)
-        return LinearSolver(assemble(inner(a_test, b_trial) * dx),solver_parameters = self.riesz_sp(),)
+        a = inner(a_test, b_trial)*dx
+        L = inner(lam2, a_test)*dx
+        problem = LinearVariationalProblem(a, L, g_k)
+        solver = LinearVariationalSolver(problem, solver_parameters = self.projection_sp())
+        return solver
 
     def forward_form(self, mesh, rho_k_filtered, w, y_test, bcs):
         raise NotImplementedError
@@ -67,50 +98,12 @@ class SiMPL:
         problem = LinearVariationalProblem(a, L, rho_k_filtered)
         solver = LinearVariationalSolver(problem, solver_parameters = self.filter_sp())
         # Filter adjoint problem (built once)
-        rhs2 = -dJdrhof
-        _filter_adj_prob = LinearVariationalProblem(a, rhs2, lam2)
-        filter_adj_solver = LinearVariationalSolver(_filter_adj_prob, solver_parameters=self.adj_filter_sp())
-        return solver, filter_adj_solver, L
-
+        filter_adj_prob = LinearVariationalProblem(a, dJdrhof, lam2)
+        filter_adj_solver = LinearVariationalSolver(filter_adj_prob, solver_parameters=self.adj_filter_sp())
+        return solver, filter_adj_solver
 
     def  construct_Jobj(self, w, rho_k_filtered):
         raise NotImplementedError
-
-    def setup(self, mesh):
-        A, F = self.density_function_spaces(mesh)
-        W = self.primal_function_space(mesh)
-
-        Riesz = self.construct_Riesz_solver(A)
-
-        rho_k = Function(A)  # density function
-        rho_k_filtered = Function(F)  # filtered density
-        rho_k_filtered.rename("Filtered Density")
-        w = Function(W)  # create function to hold the solution (u,p)
-
-        y_test = TestFunction(W)
-        lam = Function(W)  # primal adjoint
-        lam2 = Function(F) # filter adjoint
-
-        bcs = self.boundary_conditions(W)
-        Res = self.forward_form(mesh, rho_k_filtered, w, y_test, bcs)
-        forward_solver, adj_solver, Jobj = self.construct_primal_solvers(Res, w, lam, y_test, rho_k_filtered, bcs)
-
-
-        # dJ/d(rho_filtered) (built once, symbolic)
-        dFdrhof = derivative(Res, rho_k_filtered)
-        dJdrhof = derivative(Jobj, rho_k_filtered) + action(adjoint(dFdrhof), lam)
-
-        filter_solver, filter_adj_solver, L = self.construct_filter_solvers(F, rho_k, rho_k_filtered, lam2, dJdrhof)
-
-
-        # dJ/d(rho) (built once, symbolic)
-        dFdrho = -derivative(L, rho_k)
-        dJdrho_form = action(adjoint(dFdrho), lam2)
-
-        info_g(f"Primal DoFs: {W.dim()}, Density DoFs: {A.dim()}")
-
-        return A, w, rho_k, rho_k_filtered, Jobj, Riesz, forward_solver, filter_solver, adj_solver, filter_adj_solver, dJdrho_form 
-
 
     def illinois(self, f, a, b, tol=1e-8, maxiter=100):
         fa = f(a)
@@ -165,11 +158,11 @@ class SiMPL:
     # ------------------------------------------------------------------
     # Generalised Barzilai-Borwein step size
     # ------------------------------------------------------------------
-    def alpha_gbb(self, bb_num_f, bb_den_f, psi_k, psi_prev, rho_k, rho_old, g_k, g_prev, alpha_prev):
-        bb_num_f.interpolate((psi_k - psi_prev) * (rho_k - rho_old))
-        bb_den_f.interpolate((g_k - g_prev) * (rho_k - rho_old))
-        num = assemble(bb_num_f * dx)
-        den = abs(assemble(bb_den_f * dx))
+    def alpha_gbb(self, tmp_var, psi_k, psi_prev, rho_k, rho_old, g_k, g_prev, alpha_prev):     
+        tmp_var.interpolate((psi_k - psi_prev) * (rho_k - rho_old))
+        num = assemble(tmp_var * dx)
+        tmp_var.interpolate((g_k - g_prev) * (rho_k - rho_old))
+        den = abs(assemble(tmp_var * dx))
 
         if num <= 0.0:
             raise ValueError("Negative numerator in GBB step size calculation.")
@@ -210,14 +203,13 @@ class SiMPL:
         return assemble(Jobj)
 
 
-    def compute_derivative(self, adj_solver, filter_adj_solver, dJdrho_form):
+    def compute_derivative(self, adj_solver, filter_adj_solver):
         """Solve the two adjoint systems (already built/factorised once
         above) and return the reduced gradient as an assembled cofunction."""
         info_b("Starting adjoint solve.")
         adj_solver.solve()
         info_b("Starting adjoint filter solve.")
         filter_adj_solver.solve()
-        return assemble(dJdrho_form)
 
     def simpl(
         self,
@@ -241,15 +233,14 @@ class SiMPL:
         if descent_tol is None:
             descent_tol = tol
 
-        (A, w, rho_k, rho_k_filtered, Jobj, 
-         Riesz, forward_solver, filter_solver, adj_solver, 
-         filter_adj_solver, dJdrho_form) = self.setup_parameters
+        (A, w, rho_k, rho_k_filtered, g_k, Jobj, 
+         projection, forward_solver, filter_solver, adj_solver, 
+         filter_adj_solver) = self.setup_parameters
         # ------------------------------------------------------------------
         # Preallocate all working Functions BEFORE the closures that use them
         # ------------------------------------------------------------------
         psi_k = Function(A, name="psi_k")
         psi_prev = Function(A, name="psi_prev")
-        g_k = Function(A, name="g_k")
         g_prev = Function(A, name="g_prev")
         psi_half = Function(A, name="psi_half")
         psi_new = Function(A, name="psi_new")
@@ -264,9 +255,6 @@ class SiMPL:
 
         alpha_c = Constant(1.0)
         mu_val_c = Constant(0.0)
-
-        bb_num_f = Function(A, name="bb_num_scratch")
-        bb_den_f = Function(A, name="bb_den_scratch")
 
 
 
@@ -290,7 +278,7 @@ class SiMPL:
         log_path = f"{output_dir}/iterations.csv"
         stage_summary_path = f"{output_dir}/stage_summary.csv"
 
-        riesz_its_history = []           # CG its, mass-matrix inversion (Riesz representative)
+        projection_its_history = []           # CG its, mass-matrix inversion (projection representative)
         filter_fwd_its_history = []      # CG its, forward filter solve
         filter_adj_its_history = []      # CG its, adjoint filter solve
         adj_ns_its_history = []          # FGMRES its, adjoint Navier-Stokes solve
@@ -306,7 +294,7 @@ class SiMPL:
                 writer.writerow([
                     "stage", "iter", "kkt", "descent", "J", "alpha", "volume", "backtracking",
                     "newton_its", "krylov_its", "krylov_per_newton",
-                    "riesz_its", "filter_fwd_its", "filter_adj_its", "adj_ns_its",
+                    "projection_its", "filter_fwd_its", "filter_adj_its", "adj_ns_its",
                 ])
                 stage_writer.writerow([
                     "stage", "q_value", "n_iterations_requested", "n_iterations_run", "converged",
@@ -336,15 +324,17 @@ class SiMPL:
                         J_current = float(self.build_functional(filter_solver, forward_solver, Jobj))
 
                     # ---- Gradient ------------------------------------------
-                    gk_dual = self.compute_derivative(adj_solver, filter_adj_solver, dJdrho_form)
+                    # Update lam2 to contain new descent direction
+                    self.compute_derivative(adj_solver, filter_adj_solver)
 
                     adj_ns_its = adj_solver.snes.getLinearSolveIterations()      # FGMRES its, adjoint forward
                     filter_adj_its = filter_adj_solver.snes.getLinearSolveIterations()  # CG its, adjoint filter
 
-                    info_b("Starting Riesz solve.")
-                    Riesz.solve(g_k, gk_dual)
+                    info_b("Starting projection solve.")
+                    # Project descent direction lam2 into FEM space of g_k
+                    projection.solve()
 
-                    riesz_its = Riesz.ksp.getIterationNumber()
+                    projection_its = projection.snes.getLinearSolveIterations()
 
                     with g_k.dat.vec_ro as gvec:
                         gnorm = gvec.norm(PETSc.NormType.NORM_INFINITY)
@@ -360,12 +350,12 @@ class SiMPL:
                             alpha_step = 1.0 / gnorm
                         else:
                             alpha_step = self.alpha_gbb(
-                                bb_num_f, bb_den_f, psi_k, psi_prev, rho_k,
+                                tmp_var, psi_k, psi_prev, rho_k,
                                 rho_old, g_k, g_prev, alpha_initial,
                             )
                     else:
                         alpha_step = self.alpha_gbb(
-                            bb_num_f, bb_den_f, psi_k, psi_prev, rho_k,
+                            tmp_var, psi_k, psi_prev, rho_k,
                             rho_old, g_k, g_prev, alpha_prev,
                         )
 
@@ -385,7 +375,7 @@ class SiMPL:
 
                         J_new = float(self.build_functional(filter_solver, forward_solver, Jobj))
                         difference.interpolate(rho_k - rho_old)
-                        descent = assemble(action(gk_dual, difference))
+                        descent = assemble(inner(g_k, difference)*dx)
 
                         if descent > 0:
                             break
@@ -400,6 +390,7 @@ class SiMPL:
 
                         alpha_step *= 0.5
                         n_bt += 1
+                        info_r(f"Step size does not satisfy Armijo condition. Backtracking iteration {n_bt}.")
                         if n_bt > max_backtrack:
                             break
 
@@ -432,7 +423,7 @@ class SiMPL:
                         f"  k={k:3d}  J={J_new:.6e}  "
                         f"KKT={kkt:.3e}  descent={descent_val:.3e}  vol={vol:.4f}  α={alpha_step:.3e}  bt={n_bt}  "
                         f"Newton={nonlinear_its}  Krylov={linear_its} ({krylov_per_newton:.1f}/Newton)  "
-                        f"Riesz={riesz_its}  FiltFwd={filter_fwd_its}  FiltAdj={filter_adj_its}  Adj={adj_ns_its}"
+                        f"Projection={projection_its}  FiltFwd={filter_fwd_its}  FiltAdj={filter_adj_its}  Adj={adj_ns_its}"
                     )
                     if self.rank0:
                         writer.writerow([
@@ -447,14 +438,14 @@ class SiMPL:
                             int(nonlinear_its),
                             int(linear_its),
                             float(krylov_per_newton),
-                            int(riesz_its),
+                            int(projection_its),
                             int(filter_fwd_its),
                             int(filter_adj_its),
                             int(adj_ns_its),
                         ])
                         log_file.flush()
 
-                        riesz_its_history.append(riesz_its)
+                        projection_its_history.append(projection_its)
                         filter_fwd_its_history.append(filter_fwd_its)
                         filter_adj_its_history.append(filter_adj_its)
                         adj_ns_its_history.append(adj_ns_its)
@@ -507,7 +498,7 @@ class SiMPL:
         def _safe_mean(history):
             return float(np.mean(history)) if len(history) > 0 else float("nan")
 
-        avg_riesz = _safe_mean(riesz_its_history)
+        avg_projection = _safe_mean(projection_its_history)
         avg_filter_fwd = _safe_mean(filter_fwd_its_history)
         avg_filter_adj = _safe_mean(filter_adj_its_history)
         avg_adj_ns = _safe_mean(adj_ns_its_history)
@@ -517,7 +508,7 @@ class SiMPL:
         if self.rank0:
             info_g(f"\n{'=' * 60}")
             info_g("Average solver iterations over the whole optimization run:")
-            info_g(f"  Riesz / mass-matrix inversion .... ......... {avg_riesz:.2f}")
+            info_g(f"  Projection / mass-matrix inversion .... ......... {avg_projection:.2f}")
             info_g(f"  Forward filter solve ..... ................. {avg_filter_fwd:.2f}")
             info_g(f"  Adjoint filter solve ....................... {avg_filter_adj:.2f}")
             info_g(f"  Adjoint solve ...................... ....... {avg_adj_ns:.2f}")
@@ -529,7 +520,7 @@ class SiMPL:
             with open(summary_path, "w", newline="") as f:
                 summary_writer = csv.writer(f)
                 summary_writer.writerow(["quantity", "average_iterations", "n_samples"])
-                summary_writer.writerow(["riesz_mass_matrix_cg", avg_riesz, len(riesz_its_history)])
+                summary_writer.writerow(["projection_mass_matrix_cg", avg_projection, len(projection_its_history)])
                 summary_writer.writerow(["filter_forward_cg", avg_filter_fwd, len(filter_fwd_its_history)])
                 summary_writer.writerow(["filter_adjoint_cg", avg_filter_adj, len(filter_adj_its_history)])
                 summary_writer.writerow(["adjoint_ns_fgmres", avg_adj_ns, len(adj_ns_its_history)])

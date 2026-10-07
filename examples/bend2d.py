@@ -7,7 +7,7 @@ from simpl import *
 class Bend2D(NavierStokesMTW):
 
     def mesh(self):
-        maxh = 0.05
+        maxh = 0.1
         ngmesh, markers = create_geometry_bend(maxh)
         base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
         mh   = MeshHierarchy(base, 2)
@@ -174,8 +174,11 @@ class Bend2D(NavierStokesMTW):
         }
         return sp
 
-    def riesz_sp(self):
+    def projection_sp(self):
         sp = {
+            # "ksp_type": "cg",
+            # "ksp_atol": 1e-6,
+            # "ksp_rtol": 1e-6,
             "ksp_type": "preonly",
             "pc_type": "jacobi",
         }
