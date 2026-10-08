@@ -7,7 +7,7 @@ class Cantilever2D(Compliance):
 
     def mesh(self):
         base = RectangleMesh(40, 20, self.length, self.height)
-        self.mesh_hierarchy = MeshHierarchy(base, 1)
+        self.mesh_hierarchy = MeshHierarchy(base, 3)
         return self.mesh_hierarchy[-1]
 
     def boundary_conditions(self, W):
@@ -17,9 +17,9 @@ class Cantilever2D(Compliance):
     def load_form(self, v):
         _, y = SpatialCoordinate(self.mesh)
         # A unit downward force distributed over the middle of the right edge.
-        loaded = abs(y - self.height / 2.0) <=  0.1
+        loaded = abs(y - self.height / 2.0) <=  0.05
         traction = as_vector((0.0, conditional(loaded, -1.0, 0.0)))
-        return inner(traction, v) * ds(2, domain=self.mesh, degree=4)
+        return inner(traction, v) * ds(2, domain=self.mesh, degree=2)
 
     def forward_sp(self):
         return {
@@ -44,15 +44,14 @@ if __name__ == "__main__":
         mu=Constant(10),
         lmbda=Constant(50),
         E_min=Constant(1e-5),
-        r_min=0.03,
     )
-    target_volume = 0.8
+    target_volume = 0.4
 
     problem.simpl(
-        tol=1e-4,
+        tol=1e-6,
         target_volume=target_volume,
-        q_values=(3.0,),
-        iters_per_q=(100,),
+        q_values=(0.01,0.005),
+        iters_per_q=(20,100),
         c1=1e-8,
         simpl_type="A",
         max_backtrack=20,

@@ -17,22 +17,21 @@ class Adj_Solver:
 
 class Compliance(SiMPL):
 
-    def __init__(self, mu, lmbda, E_min, r_min, penalty=3.0):
+    def __init__(self, mu, lmbda, E_min):
         self.mesh = self.mesh()
         self.comm  = self.mesh.comm
         self.rank0 = (self.comm.rank == 0)   
         self.mu = mu
         self.lmbda = lmbda
         self.E_min = E_min
-        self.r_min = r_min
-        self.q = Constant(penalty)
+        self.q = Constant(1)
         self.setup_parameters = self.setup(self.mesh)
 
     def primal_function_space(self, mesh):
         return VectorFunctionSpace(mesh, "CG", 1)
 
     def simp(self, rho):
-        return self.E_min + (Constant(1) - self.E_min) * rho**self.q
+        return self.E_min + (Constant(1) - self.E_min) * rho**3
 
     def stress(self, u, rho):
         k = self.simp(rho)
@@ -54,6 +53,18 @@ class Compliance(SiMPL):
         solver = LinearVariationalSolver(problem, solver_parameters=self.forward_sp())
         adj_solver = Adj_Solver(lam, w)
         return solver, adj_solver, self.construct_Jobj(w, rho_k_filtered)
+    
+    def construct_filter_solvers(self, F, rho_k, rho_k_filtered, lam2, dJdrhof):
+        v_test = TestFunction(F)
+        rho_trial = TrialFunction(F)
+        a = self.q**2 * inner(grad(rho_trial), grad(v_test)) * dx + rho_trial * v_test * dx
+        L = rho_k * v_test * dx#(degree=10)
+        problem = LinearVariationalProblem(a, L, rho_k_filtered)
+        solver = LinearVariationalSolver(problem, solver_parameters = self.filter_sp())
+        # Filter adjoint problem (built once)
+        filter_adj_prob = LinearVariationalProblem(a, dJdrhof, lam2)
+        filter_adj_solver = LinearVariationalSolver(filter_adj_prob, solver_parameters=self.adj_filter_sp())
+        return solver, filter_adj_solver
 
     def initialize_save_solutions(self, w, rho_k_filtered, rho_k, output_dir):
         control_vtk = VTKFile(f"{output_dir}/control_iterations.pvd")
