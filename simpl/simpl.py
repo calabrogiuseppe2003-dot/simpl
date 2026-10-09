@@ -219,7 +219,7 @@ class SiMPL:
 
     def simpl(
         self,
-        tol,
+        rtol,
         target_volume,
         q_values=(0.01, 0.1),
         iters_per_q=(18, 30),
@@ -230,14 +230,23 @@ class SiMPL:
         output_dir="output",
         alpha_initial=None,
         save_iterates=False,
+        rho_initial=None,
+        atol=1e-12
     ):
+        """Optimize from a uniform density or a supplied density on this mesh.
+
+        ``rho_initial`` must already be in the density space of this problem.
+        The state in ``setup_parameters[1]`` is retained as the physics solver's
+        initial guess. A new call rebuilds the latent density and step history.
+        Initial densities at 0 or 1 are clipped slightly for the logarithm.
+        """
         if len(q_values) != len(iters_per_q):
             raise ValueError("q_values and iters_per_q must have the same length.")
         if simpl_type not in ("A", "B"):
             raise ValueError("simpl_type must be 'A' or 'B'.")
 
         if descent_tol is None:
-            descent_tol = tol
+            descent_tol = rtol
 
         (A, w, rho_k, rho_k_filtered, g_k, Jobj, 
          projection, forward_solver, filter_solver, adj_solver, 
@@ -266,7 +275,23 @@ class SiMPL:
         # Initialise
         # ------------------------------------------------------------------
         domain_volume = float(assemble(Constant(1.0) * dx(domain=self.mesh)))
-        rho_k.assign(target_volume/domain_volume)
+        if rho_initial is None:
+            rho_k.assign(target_volume/domain_volume)
+        else:
+            if rho_initial.function_space() != A:
+                raise ValueError("rho_initial must be in this problem's density space.")
+            rho_k.assign(rho_initial)
+            with rho_k.dat.vec_ro as rho_vec:
+                _, rho_min = rho_vec.min()
+                _, rho_max = rho_vec.max()
+                rho_norm = rho_vec.norm()
+            if not (np.isfinite(rho_norm) and np.isfinite(rho_min) and np.isfinite(rho_max)
+                    and rho_min >= -1e-12 and rho_max <= 1.0 + 1e-12):
+                raise ValueError("rho_initial must contain finite densities between 0 and 1.")
+            rho_k.interpolate(min_value(1.0 - 1e-12, max_value(1e-12, rho_k)))
+            initial_volume = float(assemble(rho_k * dx))
+            if initial_volume > float(target_volume) + 1e-8 * max(1.0, domain_volume):
+                raise ValueError("rho_initial exceeds the target material volume.")
         psi_k.interpolate(self.sigma_inv(rho_k))
 
         if self.rank0:
@@ -467,10 +492,8 @@ class SiMPL:
                         self.save_solutions(w, rho_k_filtered, rho_k)
 
                     # ---- Convergence check ---------------------------------
-                    if kkt_rel <= tol or descent_val >= -descent_tol:
-                        info_g(
-                            f"  Stage {stage}: converged (KKT + descent) in {k + 1} iterations."
-                        )
+                    if kkt_rel <= rtol or abs(kkt) <= atol or descent_val >= -descent_tol:
+                        info_g(f"  Stage {stage}: converged (KKT + descent) in {k + 1} iterations.")
                         converged = True
                         break
 
