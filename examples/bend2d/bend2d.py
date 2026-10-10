@@ -197,12 +197,10 @@ if __name__ == "__main__":
     atol = 1e-15
 
     problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
-    problem.setup_parameters[2].assign(target_volume)
     Re_v = [1,10, 100] + list(range(200, int(float(Re)) + 1, 300))
-    problem.continuation_solve(Re_v, "output/", save_file=True)
+    problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_file=True)
 
-
-    rho_opt, J_filtered = problem.simpl(
+    rho_opt, J_filtered, _ = problem.simpl(
         rtol=rtol,
         atol=atol,
         target_volume=target_volume,

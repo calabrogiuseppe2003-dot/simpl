@@ -55,7 +55,11 @@ class NavierStokes(SiMPL):
         ) * dx
         return Jobj
 
-    def continuation_solve(self, Re_v, output_dir="output", save_file=False):
+    def continuation_solve(self, Re_v, q_0, target_volume, output_dir="output", save_file=False):
+        domain_volume = float(assemble(Constant(1.0) * dx(domain=self.mesh)))
+        self.setup_parameters[2].assign(target_volume/domain_volume)
+        self.setup_parameters[8].solve()
+        self.q.assign(float(q_0))
         w = self.setup_parameters[1]
         Re = self.Re
         forward_solver = self.setup_parameters[7]

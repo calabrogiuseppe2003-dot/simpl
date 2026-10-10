@@ -15,7 +15,7 @@ from firedrake import DistributedMeshOverlapType
 # Problem parameters
 # --------------------------------------------------------------------
 
-Re            = Constant(1)  # Reynolds number
+Re            = Constant(5000)  # Reynolds number
 gbar          = 1.0           # max inlet/outlet velocity
 dens          = Constant(1.0)  # density
 l              = 1/5
