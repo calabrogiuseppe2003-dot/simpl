@@ -1,19 +1,18 @@
 from firedrake import *
 from netgen.occ import *
 from meshgenbend import create_geometry_bend
-import os
 from simpl import *
 
 class Bend2D(NavierStokesMTW):
 
-    def mesh(self):
-        maxh = 0.1
-        ngmesh, markers = create_geometry_bend(maxh)
-        base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
-        mh   = MeshHierarchy(base, 2)
-        mesh = mh[-1]
+    def __init__(self, Re, gamma, alphaunderbar, alphabar, r_min, mu, dens, mesh, markers, level):
+        self._mesh = mesh
         self.markers = markers
-        return mesh
+        self.level = level
+        super().__init__(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
+
+    def mesh(self):
+        return self._mesh
 
     def boundary_conditions(self, W):
         markers = self.markers
@@ -44,6 +43,31 @@ class Bend2D(NavierStokesMTW):
         return bcs
 
     def forward_sp(self):
+        if self.level > 1:
+            return self.forward_sp_mg()
+        else:
+            return self.forward_sp_lu()
+
+    def adj_sp(self):
+        if self.level > 1:
+            return self.adj_sp_mg()
+        else:
+            return self.forward_sp_lu()
+
+    def filter_sp(self):
+        if self.level > 1:
+            return self.filter_sp_mg()
+        else:
+            return self.forward_sp_lu()
+
+    def adj_filter_sp(self):
+        if self.level > 1:
+            return self.adj_filter_sp_mg()
+        else:
+            return self.forward_sp_lu()
+
+
+    def forward_sp_lu(self):
         sp ={
             "snes_type": "newtonls",
             "mat_type": "aij",
@@ -56,17 +80,8 @@ class Bend2D(NavierStokesMTW):
             # "snes_linesearch_type": "basic",
         }
         return sp
-
-    def adj_sp(self):
-        return self.forward_sp()
-
-    def filter_sp(self):
-        return self.forward_sp()
-
-    def adj_filter_sp(self):
-        return self.forward_sp()
     
-    def _forward_sp(self):
+    def forward_sp_mg(self):
         sp = {
             'mat_type': 'matfree',
             'snes_monitor': None,
@@ -111,7 +126,7 @@ class Bend2D(NavierStokesMTW):
         }
         return sp
 
-    def _adj_sp(self):
+    def adj_sp_mg(self):
         sp = {
             'mat_type': 'matfree',
             'snes_monitor': None,
@@ -156,20 +171,20 @@ class Bend2D(NavierStokesMTW):
         }
         return sp
 
-    def _filter_sp(self):
+    def filter_sp_mg(self):
         sp = {
             "ksp_type": "cg", # use conjugate gradients
             "ksp_monitor": None, # print info about iteration
-            "ksp_rtol": 1.0e-10, # residual relative tolerance
+            "ksp_rtol": 1.0e-6, # residual relative tolerance
             "pc_type": "mg", # use geometric multigrid
         }
         return sp
 
-    def _adj_filter_sp(self):
+    def adj_filter_sp_mg(self):
         sp = {
             "ksp_type": "cg", # use conjugate gradients
             "ksp_monitor": None, # print info about iteration
-            "ksp_rtol": 1.0e-10, # residual relative tolerance
+            "ksp_rtol": 1.0e-6, # residual relative tolerance
             "pc_type": "mg", # use geometric multigrid
         }
         return sp
@@ -188,27 +203,49 @@ if __name__ == "__main__":
     gamma         = Constant(1e4)        # augmented lagrangian penalty-coefficient
 
     c1 = 1e-3
-    q_values=(250,)
-    iters_per_q=(50,)
+    q_values_per_level = ((250,), (250,), (250,))
+    iters_per_level = ((50,), (50,), (50,))
+    rtols = (1e-3, 1e-7, 1e-7)
+    atols = (1e-4, 1e-2, 1e-2)
 
+    # Build the bend and its boundary markers once for the whole sequence.
+    ngmesh, markers = create_geometry_bend(0.02)
+    base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
+    hierarchy = MeshHierarchy(base, 2)
 
-    
-    problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
+    previous_problem = None
+    transfer_manager = None
+    for level, mesh in enumerate(hierarchy):
+        problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens, mesh, markers, level)
+        w = problem.setup_parameters[1]
+        rho_k = problem.setup_parameters[2]
+        forward_solver = problem.setup_parameters[7]
+        rho_initial = None
+        if previous_problem is None:
+            transfer_manager = forward_solver._ctx.transfer_manager
+        else:
+            forward_solver.set_transfer_manager(transfer_manager)
+            w_coarse = previous_problem.setup_parameters[1]
+            rho_coarse = previous_problem.setup_parameters[2]
+            transfer_manager.prolong(rho_coarse, rho_k)
+            # Prolong velocity and pressure
+            for wc_i, wf_i in zip(w_coarse.subfunctions, w.subfunctions):
+                transfer_manager.prolong(wc_i, wf_i)
+            rho_initial = rho_k
 
+        info_r(f"Grid level {level}: {mesh.num_cells()} local cells")
 
-    if problem.rank0:
-        os.makedirs("output", exist_ok=True)
-        os.makedirs("output", exist_ok=True)
-        problem.comm.barrier()
-
-    # Re_v = [1,10, float(Re)]
-    # problem.continuation_solve(Re_v, "output")
- 
-    problem.simpl(tol=1e-5,
-                  target_volume=target_volume,
-                  q_values=q_values,
-                  iters_per_q = iters_per_q,
-                  c1=c1,
-                  simpl_type="A",
-                  max_backtrack=10,
-                  save_iterates=True)
+        problem.simpl(
+            rtol=rtols[level],
+            atol=atols[level],
+            target_volume=target_volume,
+            q_values=q_values_per_level[level],
+            iters_per_q=iters_per_level[level],
+            c1=c1,
+            simpl_type="A",
+            max_backtrack=10,
+            output_dir=f"output/bend2d/level_{level}",
+            save_iterates=True,
+            rho_initial=rho_initial,
+        )
+        previous_problem = problem
