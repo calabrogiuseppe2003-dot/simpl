@@ -1,44 +1,44 @@
 from firedrake import *
-from netgen.occ import *
-from meshgenbend import create_geometry_bend
+from boxbend import mesh_bend_pipe_3d
 from simpl import *
 
-class Bend2D(NavierStokesMTW):
+
+class Bend3D(NavierStokesMTW):
 
     def mesh(self):
-        maxh = 0.004*4 
-        ngmesh, markers = create_geometry_bend(maxh)
-        base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
+        maxh = 0.1
+        ngmesh, markers = mesh_bend_pipe_3d(maxh)
+        base = Mesh(ngmesh, distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
         mh = MeshHierarchy(base, 2)
         self.markers = markers
         return mh[-1]
-        
 
     def boundary_conditions(self, W):
         markers = self.markers
-        BOTTOM_WALL_LEFT  = markers["bottom_wall_left"]
-        BOTTOM_OUTLET     = markers["bottom_outlet"]
-        BOTTOM_WALL_RIGHT = markers["bottom_wall_right"]
-        RIGHT_WALL        = markers["right_wall"]
-        TOP_WALL          = markers["top_wall"]
-        LEFT_WALL_TOP     = markers["left_wall_top"]
-        LEFT_INLET        = markers["left_inlet"]
-        LEFT_WALL_BOTTOM  = markers["left_wall_bottom"]
+        WALLS = [
+            markers["wall_xmin"],
+            markers["wall_xmax"],
+            markers["wall_ymin"],
+            markers["wall_ymax"],
+            markers["wall_zmin"],
+            markers["wall_zmax"],
+        ]
+        INLET = markers["inlet"]
+        OUTLET = markers["outlet"]
 
-        (x, y) = SpatialCoordinate(self.mesh)
+        (x, y, z) = SpatialCoordinate(self.mesh)
         l = 1/5
-        val1 = gbar * (1 - (2 * (y - 0.8) / l) ** 2)  # inlet parabolic profile
+        r_pipe = l / 2
+        rho1_sq = (y - 1/2)**2 + (z - 4*l)**2
+        val1 = gbar * (1 - rho1_sq / r_pipe**2)
+        rho2_sq = (x - 4*l)**2 + (y - 1/2)**2
+        val2 = -gbar * (1 - rho2_sq / r_pipe**2)
+
         bcs = [
-            # u = 0 on all walls
-            DirichletBC(W.sub(0), Constant((0.0,0.0)), [
-                BOTTOM_WALL_LEFT,
-                BOTTOM_WALL_RIGHT,
-                RIGHT_WALL,
-                TOP_WALL,
-                LEFT_WALL_TOP,
-                LEFT_WALL_BOTTOM,
-            ]),
-            DirichletBC(W.sub(0), as_vector([val1,0.0]), LEFT_INLET),
+            DirichletBC(W.sub(0), as_vector([val1, 0, 0]), INLET),
+            # Uncomment to prescribe the outlet velocity.
+            # DirichletBC(W.sub(0), as_vector([0, 0, val2]), OUTLET),
+            DirichletBC(W.sub(0), Constant((0, 0, 0)), WALLS),
         ]
         return bcs
 
@@ -67,21 +67,19 @@ class Bend2D(NavierStokesMTW):
             # "snes_linesearch_type": "basic",
         }
         return sp
-    
+
     def forward_sp_mg(self):
         sp = {
             'mat_type': 'matfree',
             'snes_monitor': None,
-            #'snes_converged_reason': None,
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
+            'snes_atol': 1e-08,
             'snes_rtol': 1e-12,
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
-            # 'ksp_converged_reason': None,
             'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
-            'ksp_atol': 1e-8,
+            'ksp_atol': 1e-08,
             'ksp_rtol': 1e-10,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
@@ -104,7 +102,7 @@ class Bend2D(NavierStokesMTW):
                     'mg_levels': {
                         'ksp_convergence_test': 'skip',
                         'ksp_max_it': 5,
-                        'ksp_type': 'gmres',
+                        'ksp_type': 'fgmres',
                         'pc_type': 'python',
                         'pc_python_type': 'firedrake.ASMStarPC',
                     },
@@ -117,16 +115,14 @@ class Bend2D(NavierStokesMTW):
         sp = {
             'mat_type': 'matfree',
             'snes_monitor': None,
-            #'snes_converged_reason': None,
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
+            'snes_atol': 1e-08,
             'snes_rtol': 1e-12,
             'snes_stol': 1e-06,
             'ksp_type': 'fgmres',
-            #'ksp_converged_reason': None,
             'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
-            'ksp_atol': 1e-8,
+            'ksp_atol': 1e-08,
             'ksp_rtol': 1e-10,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
@@ -139,20 +135,20 @@ class Bend2D(NavierStokesMTW):
                 'pc_type': 'python',
                 'pc_python_type': 'firedrake.AssembledPC',
                 'assembled': {
-                'pc_use_amat': False,
-                'pc_type': 'mg',
-                'pc_mg_type': 'full',
-                'mg_coarse_mat_type': 'aij',
-                'mg_coarse_pc_type': 'lu',
-                'mg_coarse_pc_factor_mat_solver_type': 'mumps',
-                'mg_coarse_mat_mumps_icntl_14': 1000,
-                'mg_levels': {
-                    'ksp_convergence_test': 'skip',
-                    'ksp_max_it': 5,
-                    'ksp_type': 'gmres',
-                    'pc_type': 'python',
-                    'pc_python_type': 'firedrake.ASMStarPC',
-                },
+                    'pc_use_amat': False,
+                    'pc_type': 'mg',
+                    'pc_mg_type': 'full',
+                    'mg_coarse_mat_type': 'aij',
+                    'mg_coarse_pc_type': 'lu',
+                    'mg_coarse_pc_factor_mat_solver_type': 'mumps',
+                    'mg_coarse_mat_mumps_icntl_14': 1000,
+                    'mg_levels': {
+                        'ksp_convergence_test': 'skip',
+                        'ksp_max_it': 5,
+                        'ksp_type': 'fgmres',
+                        'pc_type': 'python',
+                        'pc_python_type': 'firedrake.ASMStarPC',
+                    },
                 },
             },
         }
@@ -160,35 +156,35 @@ class Bend2D(NavierStokesMTW):
 
     def filter_sp_mg(self):
         sp = {
-            "ksp_type": "cg",
-            "ksp_monitor": None,
-            "ksp_rtol": 1.0e-10,
-            "pc_type": "mg",
+            'ksp_type': 'cg',
+            'ksp_rtol': 1e-10,
+            'pc_type': 'mg',
         }
         return sp
 
 if __name__ == "__main__":
-    Re            = Constant(5000)  # Reynolds number
-    gbar          = 1.0           # max inlet/outlet velocity
-    dens          = Constant(1.0)  # density
+    Re            = Constant(5000)
+    gbar          = 1.0
+    dens          = Constant(1.0)
     mu            = dens * gbar / Re
-    nu            = 1.0 / Re       # nondimensional viscosity used in the forward problem
-    alphaunderbar = 2.5 * mu / (1 / 5**2)   # alpha_min in the original dimensional scaling
-    alphabar      = 1e4 * alphaunderbar     # alpha_max in the original dimensional scaling
-    target_volume = 1/4
+    nu            = 1.0 / Re
+    alphaunderbar = 0
+    alphabar      = 1e4 * mu / (1 / 5**2)
+    volfrac       = 0.05
+    target_volume = volfrac
     alpha_init    = 2.5 * mu / (0.1**2)
-    r_min         = 0.04                  #filter radius
-    gamma         = Constant(1e4)        # augmented lagrangian penalty-coefficient
+    r_min         = 0.04
+    gamma         = Constant(1e4)
 
+    q_0 = 0.1*float(((alphabar - alpha_init) - target_volume * (alphabar - alphaunderbar)) / (target_volume * (alpha_init - alphaunderbar)))
+    q_vec =q_0 * np.array([1,0.1, 0.05])
     c1 = 1e-3
-    q_0 = ((alphabar - alpha_init) - target_volume * (alphabar - alphaunderbar)) / (target_volume * (alpha_init - alphaunderbar))
-    q_vec = q_0 * np.array([1, 0.5,0.1,0.05])
-    iters_per_q = (5, 5, 5, 100)
+    iters_per_q = (5, 5, 50)
     rtol = 1e-5
     atol = 1e-15
 
-    problem = Bend2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
-    Re_v = [1,10, 100] + list(range(200, int(float(Re)) + 1, 300))
+    problem = Bend3D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
+    Re_v = [1, 10, 100] + list(range(200, int(float(Re)) + 1, 500))
     problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_file=True)
 
     rho_opt, J_filtered, alpha_step = problem.simpl(
@@ -200,7 +196,8 @@ if __name__ == "__main__":
         c1=c1,
         simpl_type="A",
         max_backtrack=10,
-        output_dir=f"output/",
+        descent_tol=1e-8,
+        output_dir="output/",
         save_iterates=True,
     )
 
