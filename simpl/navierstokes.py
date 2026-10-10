@@ -55,7 +55,7 @@ class NavierStokes(SiMPL):
         ) * dx
         return Jobj
 
-    def continuation_solve(self, Re_v, output_dir, save_file=False):
+    def continuation_solve(self, Re_v, output_dir="output", save_file=False):
         w = self.setup_parameters[1]
         Re = self.Re
         forward_solver = self.setup_parameters[7]
