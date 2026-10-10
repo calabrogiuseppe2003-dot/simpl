@@ -18,14 +18,10 @@ class Adj_Solver:
 class Compliance(SiMPL):
 
     def __init__(self, mu, lmbda, E_min):
-        self.mesh = self.mesh()
-        self.comm  = self.mesh.comm
-        self.rank0 = (self.comm.rank == 0)   
         self.mu = mu
         self.lmbda = lmbda
         self.E_min = E_min
-        self.q = Constant(1)
-        self.setup_parameters = self.setup(self.mesh)
+        super().__init__(Constant(1))
 
     def primal_function_space(self, mesh):
         return VectorFunctionSpace(mesh, "CG", 1)

@@ -52,7 +52,7 @@ if __name__ == "__main__":
     target_volume = 0.4
     q_values_per_level = ((0.01,), (0.005,), (0.005,))
     iters_per_level = ((100,), (100,), (100,))
-    rtols = (1e-4, 1e-4, 1e-4)
+    rtols = (1e-4,1e-4,1e-4)
     atols = (1e-4,1e-4,1e-4)
 
     previous_problem = None

@@ -5,18 +5,13 @@ from .simpl import *
 
 class NavierStokes(SiMPL):
     def __init__(self, Re, gamma, alphaunderbar, alphabar, r_min, mu, dens):
-        self.mesh = self.mesh()
-        self.comm  = self.mesh.comm
-        self.rank0 = (self.comm.rank == 0)
         self.Re = Re
         self.gamma = gamma
         self.alphaunderbar = alphaunderbar
         self.alphabar = alphabar
-        self.r_min = r_min
         self.mu = mu
         self.dens = dens
-        self.q = Constant(1)
-        self.setup_parameters = self.setup(self.mesh)
+        super().__init__(r_min)
 
     def alpha_perm(self, rho):
         """Inverse permeability as a function of rho."""
