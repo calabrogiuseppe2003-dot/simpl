@@ -22,7 +22,7 @@ In [examples/compliance](https://github.com/calabrogiuseppe2003-dot/simpl/tree/m
 
 ## Reynolds-robust preconditioning for Navier-Stokes
 
-Using augmented Lagrangian preconditioning techniques with specialised vertex-star patch smoothers for the multigrid cycles, we include examples of robust linear solvers for Navier-Stokes flow with high Reynolds number (up to Re=5000 in 3D). These can be found in In [examples/navierstokes](https://github.com/calabrogiuseppe2003-dot/simpl/tree/main/examples/navierstokes)
+Using augmented Lagrangian preconditioning techniques with specialised vertex-star patch smoothers for the multigrid cycles, we include examples of robust linear solvers for Navier-Stokes flow with high Reynolds number (up to Re=5000 in 3D). These can be found in [examples/navierstokes](https://github.com/calabrogiuseppe2003-dot/simpl/tree/main/examples/navierstokes)
 
 For details of robust geometric multigrid techniques for high Re Navier-Stokes flow see https://doi.org/10.1137/18M1219370.
 
