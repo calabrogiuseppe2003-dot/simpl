@@ -115,8 +115,8 @@ class NavierStokesMTW(NavierStokes):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
-                    - inner(u ,div(outer(v,u)))*dx
-                    + inner(v('+')-v('-'), uflux_int('+')-uflux_int('-'))*dS
+                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
+                    + inner(v('+')-v('-'), uflux_int('+')-uflux_int('-'))*dS(metadata={"max_quadrature_degree": 6})
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
@@ -126,7 +126,7 @@ class NavierStokesMTW(NavierStokes):
                 uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u
             else:
                 uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u + 0.5*(inner(u,n)-abs(inner(u,n)))*g
-            return dot(v, uflux_ext)*ds(bid)
+            return dot(v, uflux_ext)*ds(bid, metadata={"max_quadrature_degree": 6})
         exterior_markers = set(mesh.exterior_facets.unique_markers)
 
         for bc in bcs:
@@ -159,7 +159,7 @@ class NavierStokesTH(NavierStokes):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
-                    - inner(u ,div(outer(v,u)))*dx
+                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
@@ -180,7 +180,7 @@ class NavierStokesP1(NavierStokes):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
-                    - inner(u ,div(outer(v,u)))*dx
+                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx  
@@ -196,8 +196,8 @@ class NavierStokesP1(NavierStokes):
 
         tau = 1.0/sqrt(4.0*inner(u, u)/h**2 + (12.0 * mu / (dens * h**2))**2 + (alpha / dens)**2)
 
-        F_supg = tau* inner(dot(grad(u), v),R_m)* dx(degree=6)
-        F_pspg = (tau / dens**2)* inner(grad(q),R_m)* dx(degree=6)
+        F_supg = tau* inner(dot(grad(u), v),R_m)* dx(metadata={"max_quadrature_degree": 6})
+        F_pspg = (tau / dens**2)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
 
 
         return Res + F_supg - F_pspg
