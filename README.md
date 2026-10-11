@@ -10,14 +10,14 @@ Each descent step requires five solves:
 - Forward solve (potentially nonlinear)
 - Adjoint solve (can be skipped if the problem is self-adjoint like in compliance)
 - Adjoint filter solve
-- Mass projection (diagonal matrix when piecewise constants are used for the density)
+- Projection (diagonal matrix when piecewise constants are used for the density)
 - Filter solve
 
 This package makes it simple to compose iterative linear solves for each solve. In particular, geometric multigrid may be used for all the solves but the mass projection which itself only requires one Jacobi iteration.
 
 ## Preconditioning for compliance
 
-In [examples/compliance](https://github.com/calabrogiuseppe2003-dot/simpl/tree/main/examples/compliance), we include the implementation of a 2D cantilever. The problem is first solved on a base mesh where an LU factorization is used to solve the linear systems. We then prolong the solution and on the finer mesh, we use geometric multigrid for the forward linear elasticity solve, filter solve, and adjoint filter solve. The adjoint solve is not required as the problem is self-adjoint. The mass project is solved with one Jacobi iteration.
+In [examples/compliance](https://github.com/calabrogiuseppe2003-dot/simpl/tree/main/examples/compliance), we include the implementation of a 2D cantilever. The problem is first solved on a base mesh where an LU factorization is used to solve the linear systems. We then prolong the solution and, on the finer mesh, we use geometric multigrid for the forward linear elasticity solve, filter solve, and adjoint filter solve. The adjoint solve is not required as the problem is self-adjoint. The projection is solved with one Jacobi iteration.
 
 
 ## Reynolds-robust preconditioning for Navier-Stokes
