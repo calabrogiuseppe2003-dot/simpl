@@ -43,10 +43,10 @@ class Bend3D(NavierStokesMTW):
         return bcs
 
     def forward_sp(self):
-        return self.forward_sp_mg()
+        return self.sp_mg()
 
     def adj_sp(self):
-        return self.adj_sp_mg()
+        return self.sp_mg()
 
     def filter_sp(self):
         return self.filter_sp_mg()
@@ -54,64 +54,19 @@ class Bend3D(NavierStokesMTW):
     def adj_filter_sp(self):
         return self.filter_sp_mg()
 
-    def forward_sp_lu(self):
+    def sp_lu(self):
         sp ={
             "snes_type": "newtonls",
             "mat_type": "aij",
             "snes_monitor": None,
             "ksp_type": "preonly",
             "snes_atol": 1e-6,
-            # "ksp_monitor": None,
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
-            # "snes_linesearch_type": "basic",
         }
         return sp
 
-    def forward_sp_mg(self):
-        sp = {
-            'mat_type': 'matfree',
-            'snes_monitor': None,
-            'snes_max_it': 20,
-            'snes_atol': 1e-08,
-            'snes_rtol': 1e-12,
-            'snes_stol': 1e-06,
-            'ksp_type': 'fgmres',
-            'ksp_monitor_true_residual': None,
-            'ksp_max_it': 300,
-            'ksp_atol': 1e-08,
-            'ksp_rtol': 1e-10,
-            'pc_type': 'fieldsplit',
-            'pc_fieldsplit_type': 'schur',
-            'pc_fieldsplit_schur_factorization_type': 'full',
-            'pc_fieldsplit_0_fields': 1,
-            'pc_fieldsplit_1_fields': 0,
-            'fieldsplit_ksp_type': 'preonly',
-            'fieldsplit_0_pc_type': 'jacobi',
-            'fieldsplit_1': {
-                'pc_type': 'python',
-                'pc_python_type': 'firedrake.AssembledPC',
-                'assembled': {
-                    'pc_use_amat': False,
-                    'pc_type': 'mg',
-                    'pc_mg_type': 'full',
-                    'mg_coarse_mat_type': 'aij',
-                    'mg_coarse_pc_type': 'lu',
-                    'mg_coarse_pc_factor_mat_solver_type': 'mumps',
-                    'mg_coarse_mat_mumps_icntl_14': 1000,
-                    'mg_levels': {
-                        'ksp_convergence_test': 'skip',
-                        'ksp_max_it': 5,
-                        'ksp_type': 'fgmres',
-                        'pc_type': 'python',
-                        'pc_python_type': 'firedrake.ASMStarPC',
-                    },
-                },
-            },
-        }
-        return sp
-
-    def adj_sp_mg(self):
+    def sp_mg(self):
         sp = {
             'mat_type': 'matfree',
             'snes_monitor': None,
