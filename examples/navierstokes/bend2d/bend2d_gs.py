@@ -128,6 +128,7 @@ class Bend2D(NavierStokesMTW):
             "ksp_type": "cg",
             "ksp_monitor": None,
             "ksp_rtol": 1.0e-6,
+            "pc_type": "mg"
         }
         return sp
 

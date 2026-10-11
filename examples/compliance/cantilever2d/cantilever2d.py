@@ -5,8 +5,9 @@ class Cantilever2D(Compliance):
     length = 2.0
     height = 1.0
 
-    def __init__(self, mu, lmbda, E_min, *, mesh):
+    def __init__(self, mu, lmbda, E_min, *, mesh, level):
         self._mesh = mesh
+        self.level = level
         super().__init__(mu, lmbda, E_min)
 
     def mesh(self):
@@ -24,7 +25,19 @@ class Cantilever2D(Compliance):
         return inner(traction, v) * ds(2, domain=self.mesh, degree=2)
 
     def forward_sp(self):
-        return {
+        if self.level > 0:
+            return self.sp_mg()
+        else:
+            return self.sp_lu()
+
+    def filter_sp(self):
+        return self.forward_sp()
+
+    def adj_filter_sp(self):
+        return self.forward_sp()
+
+    def sp_lu(self):
+        sp ={
             "snes_atol": 1e-6,
             "snes_rtol": 1e-7,
             "snes_monitor": None,
@@ -33,18 +46,27 @@ class Cantilever2D(Compliance):
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
         }
+        return sp
+    
+    def sp_mg(self):
+        sp = {
+            "snes_atol": 1e-5,
+            "snes_rtol": 1e-6,
+            "snes_monitor": None,
+            "ksp_type": "cg",
+            "ksp_monitor_true_residual": None,
+            "ksp_atol": 1e-6,
+            "ksp_rtol": 1.e-7,
+            "pc_type": "mg",
+        }
+        return sp
 
-    def filter_sp(self):
-        return self.forward_sp()
-
-    def adj_filter_sp(self):
-        return self.forward_sp()
 
 
 if __name__ == "__main__":
     # Build one hierarchy so consecutive problems share parent/child meshes.
     base = RectangleMesh(160, 80, Cantilever2D.length, Cantilever2D.height)
-    hierarchy = MeshHierarchy(base, 2)
+    hierarchy = MeshHierarchy(base, 1)
     mu = Constant(10)
     lmbda = Constant(50)
     E_min = Constant(1e-5)
@@ -57,7 +79,7 @@ if __name__ == "__main__":
 
     previous_problem = None
     for level, mesh in enumerate(hierarchy):
-        problem = Cantilever2D(mu, lmbda, E_min, mesh=mesh)
+        problem = Cantilever2D(mu, lmbda, E_min, mesh=mesh, level=level)
         rho_k = problem.setup_parameters[2]
         if previous_problem is not None:
             rho_coarse = previous_problem.setup_parameters[2]
