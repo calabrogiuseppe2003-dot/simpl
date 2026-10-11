@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
     problem = Four3D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
     Re_v = [1, 10, 100] + list(range(200, int(float(Re)) + 1, 400))
-    problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_file=True)
+    problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_iterates=True)
 
     rho_opt, J_filtered, _ = problem.simpl(
         rtol=rtol,

@@ -55,7 +55,7 @@ class NavierStokes(SiMPL):
         ) * dx
         return Jobj
 
-    def continuation_solve(self, Re_v, q_0, target_volume, output_dir="output", save_file=False):
+    def continuation_solve(self, Re_v, q_0, target_volume, output_dir="output", save_iterates=False):
         domain_volume = float(assemble(Constant(1.0) * dx(domain=self.mesh)))
         self.setup_parameters[2].assign(target_volume/domain_volume)
         self.setup_parameters[8].solve()
@@ -76,7 +76,7 @@ class NavierStokes(SiMPL):
             Re.assign(Re_)
             info_b("Starting forward solve.")
             forward_solver.solve()
-        if save_file:
+        if save_iterates:
             VTKFile(f"{output_dir}/Velocity_{float(Re)}.pvd").write(u_curr)
 
     def initialize_save_solutions(self, w, rho_k_filtered, rho_k, output_dir):
