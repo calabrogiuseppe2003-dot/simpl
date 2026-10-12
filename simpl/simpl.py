@@ -24,7 +24,7 @@ class SiMPL:
         rho_k = Function(A)  # density function
         rho_k_filtered = Function(F)  # filtered density
         rho_k_filtered.rename("Filtered Density")
-        w = Function(W)  # create function to hold the solution (u,p)
+        w = Function(W)  # create function to hold the solution 
 
         y_test = TestFunction(W)
         lam = Function(W)  # primal adjoint
