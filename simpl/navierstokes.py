@@ -27,7 +27,7 @@ class NavierStokes(SiMPL):
         if self.forward_sp()["pc_type"] == "fieldsplit":
             Fp = Res - inner(p/gamma, q)*dx  + inner(div(u)*gamma, div(v))*dx  # preconditioned residual 
         else:
-            Fp = Res + inner(div(u)*gamma, div(v))*dx
+            Fp = Res #+ inner(div(u)*gamma, div(v))*dx
         Jp = derivative(Fp, w)  # preconditioned jacobian
         
 
@@ -181,6 +181,7 @@ class NavierStokesP1(NavierStokes):
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
                     - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
+                    # + inner(dot(grad(u), u) , v)*dx(metadata={"max_quadrature_degree": 6})
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx  
@@ -194,10 +195,11 @@ class NavierStokesP1(NavierStokes):
         R_m = dens * dot(grad(u), u) + grad(p) + alpha * u    
         h = CellDiameter(mesh)
 
-        tau = 1.0/sqrt(4.0*inner(u, u)/h**2 + (12.0 * mu / (dens * h**2))**2 + (alpha / dens)**2)
+        tau = 1e0/sqrt(4.0*inner(u, u)/h**2 + (12.0 * mu / (dens * h**2))**2 + (alpha / dens)**2)
+
+        # We scale our equations a bit differently
+        tau = tau / dens
 
         F_supg = tau* inner(dot(grad(u), v),R_m)* dx(metadata={"max_quadrature_degree": 6})
-        F_pspg = (tau / dens**2)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
-
-
+        F_pspg = (tau / dens)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
         return Res + F_supg - F_pspg
