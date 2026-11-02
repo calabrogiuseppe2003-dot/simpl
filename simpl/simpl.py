@@ -348,6 +348,30 @@ class SiMPL:
                 for k in range(niter):
                     if k == 0:
                         J_current = float(self.build_functional(filter_solver, forward_solver, Jobj))
+                        nonlinear_its = forward_solver.snes.getIterationNumber()
+                        linear_its = forward_solver.snes.getLinearSolveIterations()
+                        krylov_per_newton = (linear_its / nonlinear_its) if nonlinear_its > 0 else 0.0
+                        filter_fwd_its = filter_solver.snes.getLinearSolveIterations()
+                        vol = assemble(rho_k * dx)
+                        if self.rank0:
+                            writer.writerow([
+                                stage,
+                                -1,
+                                float(kkt),
+                                float(descent_val),
+                                float(J_current),
+                                float("nan"),
+                                float(vol),
+                                n_bt,
+                                int(nonlinear_its),
+                                int(linear_its),
+                                float(krylov_per_newton),
+                                float("nan"),
+                                float("nan"),
+                                float("nan"),
+                                float("nan"),
+                            ])
+                            log_file.flush()
 
                     # ---- Gradient ------------------------------------------
                     # Update lam2 to contain new descent direction
