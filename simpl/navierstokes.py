@@ -203,3 +203,101 @@ class NavierStokesP1(NavierStokes):
         F_supg = tau* inner(dot(grad(u), v),R_m)* dx(metadata={"max_quadrature_degree": 6})
         F_pspg = (tau / dens)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
         return Res + F_supg - F_pspg
+
+
+class NavierStokesMeanOutletFlow(NavierStokes):
+    """Navier-Stokes mixin with augmented-Lagrangian outlet-flow bands.
+
+    Compose this class before a discretization class, for example
+    ``class Problem(NavierStokesMeanOutletFlow, NavierStokesP1)``. Marker
+    entries may be mesh marker numbers or keys in ``self.markers``. Supply
+    one ``(lower, upper)`` fraction band for each of the first N-1 outlets;
+    conservation determines the final outlet fraction.
+    """
+
+    def __init__(self, *args, inlet_markers, outlet_markers,
+                 outlet_fraction_bounds, beta=1e4, beta_growth=2.0):
+        """Store flow constraints before SiMPL sets up the mesh and solvers."""
+        self.inlet_markers = inlet_markers
+        self.outlet_markers = outlet_markers
+        self.outlet_fraction_bounds = outlet_fraction_bounds
+        self.beta = beta
+        self.beta_growth = beta_growth
+        self.multipliers = [0.0 for _ in outlet_fraction_bounds]
+        self.flux_coefficients = [Constant(0.0) for _ in outlet_fraction_bounds]
+        self.inlet_flow = None
+        super().__init__(*args)
+
+    def boundary_id(self, marker):
+        """Resolve marker names after the concrete problem has created its mesh."""
+        if isinstance(marker, str):
+            return self.markers[marker]
+        return marker
+
+    def construct_Jobj(self, w, rho_k_filtered):
+        """Called during primal and adjoint setup; build the flux forms once."""
+        self.base_objective = super().construct_Jobj(w, rho_k_filtered)
+        u, _ = split(w)
+        n = FacetNormal(self.mesh)
+        inlet_ids = [self.boundary_id(marker) for marker in self.inlet_markers]
+        outlet_ids = [self.boundary_id(marker) for marker in self.outlet_markers]
+
+        self.inlet_flow_form = -dot(u, n) * ds(inlet_ids[0])
+        for marker in inlet_ids[1:]:
+            self.inlet_flow_form = self.inlet_flow_form - dot(u, n) * ds(marker)
+        self.outlet_flow_forms = [dot(u, n) * ds(marker) for marker in outlet_ids]
+
+        # The mutable coefficients provide dJ_AL/dQ_i to the adjoint RHS.
+        J = self.base_objective
+        for coefficient, flow_form in zip(self.flux_coefficients, self.outlet_flow_forms):
+            J += coefficient * flow_form
+        return J
+
+    def augmented_objective(self):
+        """Evaluate J_AL and refresh its outlet derivatives for the next adjoint."""
+        value = self.base_objective_value
+        self.fractions = [flow / self.inlet_flow for flow in self.outlet_flows]
+        self.constraint_values = []
+        for i, (lower, upper) in enumerate(self.outlet_fraction_bounds):
+            midpoint = (lower + upper) / 2.0
+            halfwidth = (upper - lower) / 2.0
+            deviation = self.fractions[i] - midpoint
+            g = deviation**2 - halfwidth**2
+            active = max(0.0, self.multipliers[i] + self.beta * g)
+            value += (active**2 - self.multipliers[i]**2) / (2.0 * self.beta)
+            self.flux_coefficients[i].assign(
+                2.0 * active * deviation / self.inlet_flow
+            )
+            self.constraint_values.append(g)
+        return value
+
+    def build_functional(self, filter_solver, forward_solver, Jobj):
+        """Called for the initial design and line-search trials; solve the PDE and evaluate J_AL."""
+        self.base_objective_value = float(super().build_functional(
+            filter_solver, forward_solver, self.base_objective
+        ))
+        if self.inlet_flow is None:
+            self.inlet_flow = float(assemble(self.inlet_flow_form))
+        self.outlet_flows = [float(assemble(form)) for form in self.outlet_flow_forms]
+        return self.augmented_objective()
+
+    def on_step_accepted(self, objective_value):
+        """Called only after a line-search step is accepted; update multipliers and penalty."""
+        self.multipliers = [
+            max(0.0, multiplier + self.beta * g)
+            for multiplier, g in zip(self.multipliers, self.constraint_values)
+        ]
+        if any(g > 0.0 for g in self.constraint_values):
+            self.beta *= self.beta_growth
+        value = self.augmented_objective()
+        fractions = ", ".join(
+            f"outlet {i + 1}={fraction:.4%}"
+            for i, fraction in enumerate(self.fractions)
+        )
+        lambdas = ", ".join(f"{lam_i:.3e}" for lam_i in self.multipliers)
+        info_g(f"    Outlet fractions: {fractions}  lambda=[{lambdas}]  beta={self.beta:.3e}")
+        return value
+
+    def additional_convergence_check(self):
+        """Called by SiMPL's stopping check; require every specified band to hold."""
+        return all(g <= 0.0 for g in self.constraint_values)

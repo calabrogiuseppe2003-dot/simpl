@@ -211,6 +211,14 @@ class SiMPL:
         info_b("Starting adjoint filter solve.")
         filter_adj_solver.solve()
 
+    def on_step_accepted(self, objective_value):
+        """Update optional outer multipliers and return the current objective."""
+        return objective_value
+
+    def additional_convergence_check(self):
+        """Allow subclasses to require feasibility before stopping a stage."""
+        return True
+
     def initialise_save_solutions(self, rho_k, rho_k_filtered, w):
         raise NotImplementedError
 
@@ -509,14 +517,14 @@ class SiMPL:
                     g_initialised = True
 
                     # ---- Accept step ---------------------------------------
-                    J_current = J_new
+                    J_current = self.on_step_accepted(J_new)
                     psi_k.assign(psi_new)
 
                     if save_iterates:
                         self.save_solutions(w, rho_k_filtered, rho_k)
 
                     # ---- Convergence check ---------------------------------
-                    if kkt_rel <= rtol or abs(kkt) <= atol or descent_val >= -descent_tol:
+                    if (kkt_rel <= rtol or abs(kkt) <= atol or descent_val >= -descent_tol) and self.additional_convergence_check():
                         info_g(f"  Stage {stage}: converged (KKT + descent) in {k + 1} iterations.")
                         converged = True
                         break
