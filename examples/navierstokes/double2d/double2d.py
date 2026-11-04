@@ -10,47 +10,28 @@ class Double2D(NavierStokesMTW):
         delta = 1.5
         ngmesh, markers = create_geometry(delta, maxh)
         base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
-        mh = MeshHierarchy(base, 2)
+        mh = MeshHierarchy(base, 1)
         self.markers = markers
         return mh[-1]
 
     def boundary_conditions(self, W):
         markers = self.markers
-        TOP_WALL = markers["top"]
-        BOTTOM_WALL = markers["bottom"]
-        LEFT_INLET1 = markers["left_inlet1"]
-        LEFT_INLET2 = markers["left_inlet2"]
-        RIGHT_OUTLET1 = markers["right_outlet1"]
-        RIGHT_OUTLET2 = markers["right_outlet2"]
-        LEFT_WALL_BOTTOM = markers["left_wall_bottom"]
-        LEFT_WALL_MIDDLE = markers["left_wall_middle"]
-        LEFT_WALL_TOP = markers["left_wall_top"]
-        RIGHT_WALL_BOTTOM = markers["right_wall_bottom"]
-        RIGHT_WALL_TOP = markers["right_wall_top"]
-        RIGHT_WALL_MIDDLE = markers["right_wall_middle"]
-
-        (x, y) = SpatialCoordinate(self.mesh)
-        l = 1/6
-        val1 = gbar * (1 - (2 * (y - 0.25) / l)**2)
-        val2 = gbar * (1 - (2 * (y - 0.75) / l)**2)
-
-        bcs = [
-            DirichletBC(W.sub(0), Constant((0.0, 0.0)), [
-                BOTTOM_WALL,
-                TOP_WALL,
-                LEFT_WALL_TOP,
-                LEFT_WALL_BOTTOM,
-                LEFT_WALL_MIDDLE,
-                RIGHT_WALL_BOTTOM,
-                RIGHT_WALL_TOP,
-                RIGHT_WALL_MIDDLE,
-            ]),
-            DirichletBC(W.sub(0), as_vector([val1, 0.0]), LEFT_INLET1),
-            DirichletBC(W.sub(0), as_vector([val2, 0.0]), LEFT_INLET2),
-            DirichletBC(W.sub(0), as_vector([val1, 0.0]), RIGHT_OUTLET1),
-            DirichletBC(W.sub(0), as_vector([val2, 0.0]), RIGHT_OUTLET2),
+        y = SpatialCoordinate(self.mesh)[1]
+        width = 1.0 / 6.0
+        inlet1 = gbar * (1.0 - (2.0 * (y - 0.25) / width)**2)
+        inlet2 = gbar * (1.0 - (2.0 * (y - 0.75) / width)**2)
+        walls = [
+            "bottom", "top", "left_wall_top", "left_wall_bottom",
+            "left_wall_middle", "right_wall_bottom", "right_wall_top",
+            "right_wall_middle",
         ]
-        return bcs
+        return [
+            DirichletBC(W.sub(0), Constant((0.0, 0.0)), [markers[name] for name in walls]),
+            DirichletBC(W.sub(0), as_vector((inlet1, 0.0)), markers["left_inlet1"]),
+            DirichletBC(W.sub(0), as_vector((inlet2, 0.0)), markers["left_inlet2"]),
+            DirichletBC(W.sub(0), as_vector([inlet1, 0.0]), markers["right_outlet1"]),
+            DirichletBC(W.sub(0), as_vector([inlet2, 0.0]), markers["right_outlet2"]),
+        ]
 
     def forward_sp(self):
         return self.sp_mg()
@@ -79,15 +60,15 @@ class Double2D(NavierStokesMTW):
         sp = {
             'mat_type': 'matfree',
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
-            'snes_rtol': 1e-12,
+            'snes_atol': 1e-6,
+            'snes_rtol': 1e-7,
             'snes_stol': 1e-6,
             'snes_monitor': None,
             'ksp_monitor_true_residual': None,
             'ksp_type': 'fgmres',
             'ksp_max_it': 300,
-            'ksp_atol': 1e-8,
-            'ksp_rtol': 1e-10,
+            'ksp_atol': 1e-7,
+            'ksp_rtol': 1e-8,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
             'pc_fieldsplit_schur_factorization_type': 'full',
@@ -121,7 +102,8 @@ class Double2D(NavierStokesMTW):
     def filter_sp_mg(self):
         sp = {
             'ksp_type': 'cg',
-            'ksp_rtol': 1e-10,
+            'ksp_atol': 1e-6,
+            'ksp_rtol': 1e-7,
             'pc_type': 'mg',
             'ksp_monitor': None,
         }
@@ -129,7 +111,7 @@ class Double2D(NavierStokesMTW):
 
 
 if __name__ == "__main__":
-    Re            = Constant(140)
+    Re            = Constant(1000)
     gbar          = 1.0
     dens          = Constant(1.0)
     mu            = dens * gbar / Re
@@ -148,11 +130,11 @@ if __name__ == "__main__":
     c1 = 1e-4
     iters_per_q = (5,5,50)
     rtol = 1e-5
-    atol = 1e-15
+    atol = 1e-4
 
     problem = Double2D(Re, gamma, alphaunderbar, alphabar, r_min, mu, dens)
-    # Re_v = [1, 10, 50] + list(range(100, int(float(Re)) + 1, 300))
-    # problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_iterates=True)
+    Re_v = [1, 10, 50] + list(range(100, int(float(Re)) + 1, 300))
+    problem.continuation_solve(Re_v, q_0, target_volume, "output/", save_iterates=True)
 
     rho_opt, J_filtered, _ = problem.simpl(
         rtol=rtol,

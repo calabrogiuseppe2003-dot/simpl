@@ -45,6 +45,12 @@ class NavierStokes(SiMPL):
         bcs_hom = homogenize(bcs)
         adj_prob = LinearVariationalProblem(adjA, rhs, lam, aP=JpT, bcs=bcs_hom)
         adj_solver = LinearVariationalSolver(adj_prob, solver_parameters=self.adj_sp(), pre_apply_bcs=True)
+
+
+        tm = self.transfer_manager()
+        if tm is not None:
+            solver.set_transfer_manager(tm)
+            adj_solver.set_transfer_manager(tm)
         return solver, adj_solver, Jobj
 
     def  construct_Jobj(self, w, rho_k_filtered):
@@ -159,13 +165,24 @@ class NavierStokesTH(NavierStokes):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
-                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
+                    + inner(dot(grad(u), u) , v)*dx(metadata={"max_quadrature_degree": 6})
+                    # - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
             )
         return Res
-    
+
+# Alfeld-split SV
+class NavierStokesSV(NavierStokesTH):
+    def primal_function_space(self, mesh):
+        U_h = VectorFunctionSpace(mesh, "CG", 3, variant="alfeld") # function space velocity
+        P_h = FunctionSpace(mesh, "DG", 2, variant="alfeld")  # function space pressure
+        W = MixedFunctionSpace([U_h, P_h])
+        return W
+    def transfer_manager(self):
+        return CoarsePatchTransferManager()
+
 # P1-stabilised
 class NavierStokesP1(NavierStokes):
     def primal_function_space(self, mesh):
@@ -180,8 +197,8 @@ class NavierStokesP1(NavierStokes):
 
         Res = (
             2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
-                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
-                    # + inner(dot(grad(u), u) , v)*dx(metadata={"max_quadrature_degree": 6})
+                    # - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
+                    + inner(dot(grad(u), u) , v)*dx(metadata={"max_quadrature_degree": 6})
                     + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
                     - inner(p, div(v))*dx
                     - inner(q, div(u))*dx  
@@ -202,6 +219,69 @@ class NavierStokesP1(NavierStokes):
 
         F_supg = tau* inner(dot(grad(u), v),R_m)* dx(metadata={"max_quadrature_degree": 6})
         F_pspg = (tau / dens)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
+        return Res + F_supg - F_pspg
+
+
+# P1-stabilised + Upwind Flux
+class NavierStokesP1_Flux(NavierStokesP1):
+
+    def forward_form(self, mesh, rho_k_filtered, w, y_test, bcs):
+        (u, p) = split(w)
+        (v, q) = split(y_test)
+        
+        n = FacetNormal(mesh)
+        uflux_int = 0.5*(dot(u, n) + abs(dot(u, n)))*u
+
+        Res = (
+            2/self.Re * inner(sym(grad(u)), sym(grad(v)))*dx
+                    - inner(u ,div(outer(v,u)))*dx(metadata={"max_quadrature_degree": 6})
+                    # + inner(dot(grad(u), u) , v)*dx(metadata={"max_quadrature_degree": 6})
+                    + inner(v('+')-v('-'), uflux_int('+')-uflux_int('-'))*dS(metadata={"max_quadrature_degree": 6})
+                    + self.alpha_perm(rho_k_filtered) * inner(u,v) * dx
+                    - inner(p, div(v))*dx
+                    - inner(q, div(u))*dx  
+            )
+        
+        alpha = self.alpha_perm(rho_k_filtered)
+        dens = self.dens
+        mu = self.mu
+        
+        # SUPG and PSPG terms from Appendix B in https://arxiv.org/pdf/2207.13695
+        R_m = dens * dot(grad(u), u) + grad(p) + alpha * u    
+        h = CellDiameter(mesh)
+
+        tau = 1e0/sqrt(4.0*inner(u, u)/h**2 + (12.0 * mu / (dens * h**2))**2 + (alpha / dens)**2)
+
+        # We scale our equations a bit differently
+        tau = tau / dens
+
+        F_supg = tau* inner(dot(grad(u), v),R_m)* dx(metadata={"max_quadrature_degree": 6})
+        F_pspg = (tau / dens)* inner(grad(q),R_m)* dx(metadata={"max_quadrature_degree": 6})
+
+
+        def c_bc(u, v, bid, g):
+            if g is None:
+                uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u
+            else:
+                uflux_ext = 0.5*(inner(u,n)+abs(inner(u,n)))*u + 0.5*(inner(u,n)-abs(inner(u,n)))*g
+            return dot(v, uflux_ext)*ds(bid, metadata={"max_quadrature_degree": 6})
+        exterior_markers = set(mesh.exterior_facets.unique_markers)
+
+        for bc in bcs:
+            if "DG" in str(bc._function_space):
+                continue
+            g = bc.function_arg
+            bid = bc.sub_domain
+            if isinstance(bid, Iterable):
+                for marker in bid:
+                    exterior_markers.remove(marker)
+            else:
+                exterior_markers.remove(bid)
+            Res += c_bc(u, v, bid, g) 
+
+        for bid in exterior_markers:
+            Res += c_bc(u, v, bid, None)
+
         return Res + F_supg - F_pspg
 
 

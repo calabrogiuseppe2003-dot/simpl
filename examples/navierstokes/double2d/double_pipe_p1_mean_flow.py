@@ -12,7 +12,7 @@ class DoublePipe(NavierStokesMeanOutletFlow, NavierStokesP1):
         delta = 1.5
         ngmesh, markers = create_geometry(delta, maxh)
         base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
-        mh = MeshHierarchy(base, 2)
+        mh = MeshHierarchy(base, 1)
         self.markers = markers
         return mh[-1]
 

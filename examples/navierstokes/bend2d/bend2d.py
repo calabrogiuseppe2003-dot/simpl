@@ -6,7 +6,7 @@ from simpl import *
 class Bend2D(NavierStokesMTW):
 
     def mesh(self):
-        maxh = 0.004*4 
+        maxh = 0.004*4
         ngmesh, markers = create_geometry_bend(maxh)
         base = Mesh(ngmesh,distribution_parameters={"overlap_type": (DistributedMeshOverlapType.VERTEX, 1)},)
         mh = MeshHierarchy(base, 2)
@@ -32,7 +32,7 @@ class Bend2D(NavierStokesMTW):
             # u = 0 on all walls
             DirichletBC(W.sub(0), Constant((0.0,0.0)), [
                 BOTTOM_WALL_LEFT,
-                BOTTOM_WALL_RIGHT,
+                BOTTOM_WALL_RIGHT, 
                 RIGHT_WALL,
                 TOP_WALL,
                 LEFT_WALL_TOP,
@@ -71,23 +71,29 @@ class Bend2D(NavierStokesMTW):
             'snes_monitor': None,
             #'snes_converged_reason': None,
             'snes_max_it': 20,
-            'snes_atol': 1e-8,
-            'snes_rtol': 1e-12,
-            'snes_stol': 1e-06,
+            'snes_atol': 1e-5,
+            'snes_rtol': 1e-6,
+            'snes_stol': 1e-6,
             'ksp_type': 'fgmres',
             # 'ksp_converged_reason': None,
             'ksp_monitor_true_residual': None,
             'ksp_max_it': 300,
-            'ksp_atol': 1e-8,
-            'ksp_rtol': 1e-10,
+            'ksp_atol': 1e-6,
+            'ksp_rtol': 1e-7,
             'pc_type': 'fieldsplit',
             'pc_fieldsplit_type': 'schur',
             'pc_fieldsplit_schur_factorization_type': 'full',
             'pc_fieldsplit_0_fields': 1,
             'pc_fieldsplit_1_fields': 0,
-            'fieldsplit_ksp_type': 'preonly',
-            'fieldsplit_0_pc_type': 'jacobi',
+            'fieldsplit_0':{
+                'ksp_type': 'preonly',
+                'ksp_atol': 1e-6,
+                'ksp_rtol': 1e-7,
+                'pc_type': 'jacobi',
+                # 'ksp_monitor_true_residual': None,
+            },
             'fieldsplit_1': {
+                "ksp_type": "preonly",
                 'pc_type': 'python',
                 'pc_python_type': 'firedrake.AssembledPC',
                 'assembled': {
@@ -114,13 +120,14 @@ class Bend2D(NavierStokesMTW):
         sp = {
             "ksp_type": "cg",
             "ksp_monitor": None,
-            "ksp_rtol": 1.0e-10,
+            "ksp_atol": 1e-7,
+            "ksp_rtol": 1e-8,
             "pc_type": "mg",
         }
         return sp
 
 if __name__ == "__main__":
-    Re            = Constant(5000)  # Reynolds number
+    Re            = Constant(10_000)  # Reynolds number
     gbar          = 1.0           # max inlet/outlet velocity
     dens          = Constant(1.0)  # density
     mu            = dens * gbar / Re
@@ -130,7 +137,7 @@ if __name__ == "__main__":
     target_volume = 1/4
     alpha_init    = 2.5 * mu / (0.1**2)
     r_min         = 0.04                  #filter radius
-    gamma         = Constant(1e4)        # augmented lagrangian penalty-coefficient
+    gamma         = Constant(1e6)        # augmented lagrangian penalty-coefficient
 
     c1 = 1e-3
     q_0 = ((alphabar - alpha_init) - target_volume * (alphabar - alphaunderbar)) / (target_volume * (alpha_init - alphaunderbar))

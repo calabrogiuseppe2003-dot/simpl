@@ -60,6 +60,9 @@ class SiMPL:
     def boundary_conditions(self, W):
         raise NotImplementedError
 
+    def transfer_manager(self):
+        return None
+
     def forward_sp(self):
         raise NotImplementedError
 

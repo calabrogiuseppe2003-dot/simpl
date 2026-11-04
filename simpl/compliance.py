@@ -75,3 +75,26 @@ class Compliance(SiMPL):
         self.control_vtk.write(rho_k)
         self.rhofilt_vtk.write(rho_k_filtered)
         self.displacement_vtk.write(w)
+
+class Stress(Compliance):
+
+    def construct_Jobj(self, w, rho_k_filtered):
+        stress = (2.0 * self.mu * sym(grad(w)) + self.lmbda * div(w) * Identity(self.mesh.topological_dimension))
+        k = self.simp(rho_k_filtered)
+        return inner(k*stress,stress)*dx
+
+    def construct_primal_solvers(self, Res, w, lam, y_test, rho_k_filtered, bcs):
+        a = derivative(Res, w)
+        L = self.load_form(y_test)
+        problem = LinearVariationalProblem(a, L, w, bcs=bcs)
+        solver = LinearVariationalSolver(problem, solver_parameters=self.forward_sp())
+
+        Jobj = self.construct_Jobj(w, rho_k_filtered)
+
+        adjA = adjoint(a)
+        rhs = -derivative(Jobj, w)
+
+        bcs_hom = homogenize(bcs)
+        adj_prob = LinearVariationalProblem(adjA, rhs, lam, bcs=bcs_hom)
+        adj_solver = LinearVariationalSolver(adj_prob, solver_parameters=self.adj_sp())
+        return solver, adj_solver, Jobj
