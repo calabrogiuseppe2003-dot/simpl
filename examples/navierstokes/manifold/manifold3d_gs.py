@@ -10,7 +10,7 @@ from simpl import *
 
 
 def create_geometry(maxh):
-    box = Box((0, 0, 0), (2, 1, 1))
+    box = Box((0, 0, 0), (1, 1, 1))
     for axis, side, name in (
         (X, "Min", "wall_xmin"), (X, "Max", "wall_xmax"),
         (Y, "Min", "wall_ymin"), (Y, "Max", "wall_ymax"),
@@ -18,17 +18,18 @@ def create_geometry(maxh):
     ):
         getattr(box.faces, side)(axis).name = name
 
+    ell = 1.0/6.0
     openings = [
         ("inlet", (0, 0.5, 0.5), (-1, 0, 0), (0, 1, 0), 1.0),
-        ("outlet1", (2, 0.35, 0.62), (1, 0, 0), (0, 1, 0), 0.25),
-        ("outlet2", (0.55, 0, 0.45), (0, -1, 0), (1, 0, 0), 0.25),
-        ("outlet3", (1.35, 1, 0.62), (0, 1, 0), (1, 0, 0), 0.2),
-        ("outlet4", (0.85, 0.4, 0), (0, 0, -1), (1, 0, 0), 0.1),
-        ("outlet5", (1.55, 0.65, 1), (0, 0, 1), (1, 0, 0), 0.1),
-        ("outlet6", (1.5, 0, 0.55), (0, -1, 0), (1, 0, 0), 0.1),
+        ("outlet1", (1, 0.35, 0.62), (1, 0, 0), (0, 1, 0), ell),
+        ("outlet2", (0.55, 0, 0.25), (0, -1, 0), (1, 0, 0), ell),
+        ("outlet3", (0.35, 1, 0.62), (0, 1, 0), (1, 0, 0), ell),
+        ("outlet4", (0.85, 0.4, 0), (0, 0, -1), (1, 0, 0), ell),
+        ("outlet5", (0.55, 0.65, 1), (0, 0, 1), (1, 0, 0), ell),
+        ("outlet6", (0.5, 0, 0.65), (0, -1, 0), (1, 0, 0), ell),
     ]
     faces = [box]
-    inlet_radius = 0.2
+    inlet_radius = 0.15
     for name, center, normal, horizontal, area_fraction in openings:
         plane = WorkPlane(Axes(Pnt(*center), n=Dir(*normal), h=Dir(*horizontal)))
         face = plane.Circle(inlet_radius * area_fraction**0.5).Face()
@@ -62,7 +63,7 @@ class Manifold3D(NavierStokesMeanOutletFlow, NavierStokesMTW):
 
     def boundary_conditions(self, W):
         _, y, z = SpatialCoordinate(self.mesh)
-        inlet = gbar * (1 - ((y - 0.5)**2 + (z - 0.5)**2) / 0.3**2)
+        inlet = gbar * (1 - ((y - 0.5)**2 + (z - 0.5)**2) / 0.15**2)
         walls = [self.markers[name] for name in (
             "wall_xmin", "wall_xmax", "wall_ymin", "wall_ymax", "wall_zmin", "wall_zmax"
         )]
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     base = Mesh(ngmesh, distribution_parameters={
         "overlap_type": (DistributedMeshOverlapType.VERTEX, 1)
     })
-    hierarchy = MeshHierarchy(base, 2)
+    hierarchy = MeshHierarchy(base, 4)
 
     # VTKFile("output/mesh.pvd").write(hierarchy[-1])
 
