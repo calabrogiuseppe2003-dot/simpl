@@ -1,5 +1,11 @@
+import csv
+from datetime import datetime
+from pathlib import Path
+from time import perf_counter
+
 from firedrake import *
 from netgen.occ import *
+from netgen.meshing import meshsize
 from simpl import *
 
 
@@ -22,14 +28,14 @@ def create_geometry(maxh):
         ("outlet6", (1.5, 0, 0.55), (0, -1, 0), (1, 0, 0), 0.1),
     ]
     faces = [box]
-    inlet_radius = 0.3
+    inlet_radius = 0.2
     for name, center, normal, horizontal, area_fraction in openings:
         plane = WorkPlane(Axes(Pnt(*center), n=Dir(*normal), h=Dir(*horizontal)))
         face = plane.Circle(inlet_radius * area_fraction**0.5).Face()
         face.faces.name = name
         faces.append(face)
 
-    ngmesh = OCCGeometry(Glue(faces), dim=3).GenerateMesh(maxh=maxh)
+    ngmesh = OCCGeometry(Glue(faces), dim=3).GenerateMesh(meshsize.coarse,maxh=maxh)
     markers = {name: i + 1 for i, name in enumerate(ngmesh.GetRegionNames(codim=1))}
     return ngmesh, markers
 
@@ -41,7 +47,7 @@ class Manifold3D(NavierStokesMeanOutletFlow, NavierStokesMTW):
         self.markers = markers
         self.level = level
         fractions = (0.25, 0.25, 0.2, 0.1, 0.1)
-        bounds = tuple((fraction - 0.002, fraction + 0.002) for fraction in fractions)
+        bounds = tuple((fraction - 0.05, fraction + 0.05) for fraction in fractions)
         super().__init__(
             Re, gamma, alphaunderbar, alphabar, r_min, mu, dens,
             inlet_markers=("inlet",),
@@ -148,17 +154,31 @@ if __name__ == "__main__":
     mu = dens * gbar / Re
     alphaunderbar = 2.5 * mu / 100**2
     alphabar = 2.5 * mu / 0.01**2
-    target_volume = 2.0 / 3.0
+    target_volume = 1.0 / 3.0
     r_min = 0.04
     gamma = Constant(1e4)
 
-    ngmesh, markers = create_geometry(0.1)
+    ngmesh, markers = create_geometry(0.2)
     base = Mesh(ngmesh, distribution_parameters={
         "overlap_type": (DistributedMeshOverlapType.VERTEX, 1)
     })
     hierarchy = MeshHierarchy(base, 2)
 
     # VTKFile("output/mesh.pvd").write(hierarchy[-1])
+
+    timing_path = Path(__file__).resolve().parent / "output" / "manifold3d_gs.csv"
+    if base.comm.rank == 0:
+        timing_path.parent.mkdir(parents=True, exist_ok=True)
+        run_id = datetime.now().astimezone().isoformat(timespec="seconds")
+        with timing_path.open("a", newline="") as timing_file:
+            if timing_file.tell() == 0:
+                csv.writer(timing_file).writerow(("run_id", "level", "phase", "Re", "seconds"))
+    base.comm.barrier()
+
+    def save_timing(level, phase, seconds):
+        if base.comm.rank == 0:
+            with timing_path.open("a", newline="") as timing_file:
+                csv.writer(timing_file).writerow((run_id, level, phase, float(Re), f"{seconds:.6f}"))
 
     previous_problem = None
     transfer_manager = None
@@ -173,7 +193,12 @@ if __name__ == "__main__":
         rho_initial = None
         if previous_problem is None:
             transfer_manager = forward_solver._ctx.transfer_manager
-            # problem.continuation_solve(Re_values, 200, target_volume)
+            if len(Re_values) > 1:
+                base.comm.barrier()
+                continuation_start = perf_counter()
+                problem.continuation_solve(Re_values, 200, target_volume)
+                base.comm.barrier()
+                save_timing(level, "re_continuation_total", perf_counter() - continuation_start)
         else:
             w_coarse = previous_problem.setup_parameters[1]
             rho_coarse = previous_problem.setup_parameters[2]
@@ -183,6 +208,8 @@ if __name__ == "__main__":
             rho_initial = rho_k
 
         info_r(f"Grid level {level}: {mesh.num_cells()} local cells")
+        base.comm.barrier()
+        start = perf_counter()
         problem.simpl(
             rtol=1e-5,
             atol=1e-4,
@@ -196,6 +223,8 @@ if __name__ == "__main__":
             save_iterates=True,
             rho_initial=rho_initial,
         )
+        base.comm.barrier()
+        save_timing(level, "optimization", perf_counter() - start)
         previous_problem = problem
 
     for i, fraction in enumerate(problem.fractions, start=1):
